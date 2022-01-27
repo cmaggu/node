@@ -32,13 +32,14 @@
 #include <cstdlib>
 #include <cstring>
 
-#include <functional>  // std::function
-#include <limits>
-#include <set>
-#include <string>
 #include <array>
+#include <limits>
+#include <memory>
+#include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #ifdef __GNUC__
 #define MUST_USE_RESULT __attribute__((warn_unused_result))
@@ -91,7 +92,7 @@ inline T MultiplyWithOverflowCheck(T a, T b);
 
 namespace per_process {
 // Tells whether the per-process V8::Initialize() is called and
-// if it is safe to call v8::Isolate::GetCurrent().
+// if it is safe to call v8::Isolate::TryGetCurrent().
 extern bool v8_initialized;
 }  // namespace per_process
 

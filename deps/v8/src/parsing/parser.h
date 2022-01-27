@@ -161,6 +161,8 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
 
   // Move statistics to Isolate
   void UpdateStatistics(Isolate* isolate, Handle<Script> script);
+  void UpdateStatistics(Handle<Script> script, int* use_counters,
+                        int* preparse_skipped);
   template <typename IsolateT>
   void HandleSourceURLComments(IsolateT* isolate, Handle<Script> script);
 
@@ -701,27 +703,19 @@ class V8_EXPORT_PRIVATE Parser : public NON_EXPORTED_BASE(ParserBase<Parser>) {
     return NewThrowError(Runtime::kNewTypeError, message, arg, pos);
   }
 
-  // Reporting errors.
-  void ReportMessageAt(Scanner::Location source_location,
-                       MessageTemplate message, const char* arg = nullptr) {
-    pending_error_handler()->ReportMessageAt(
-        source_location.beg_pos, source_location.end_pos, message, arg);
-    scanner_.set_parser_error();
-  }
-
   // Dummy implementation. The parser should never have a unidentifiable
   // error.
   V8_INLINE void ReportUnidentifiableError() { UNREACHABLE(); }
 
-  void ReportMessageAt(Scanner::Location source_location,
-                       MessageTemplate message, const AstRawString* arg) {
-    pending_error_handler()->ReportMessageAt(
-        source_location.beg_pos, source_location.end_pos, message, arg);
-    scanner_.set_parser_error();
-  }
-
   const AstRawString* GetRawNameFromIdentifier(const AstRawString* arg) {
     return arg;
+  }
+
+  const AstRawString* PreParserIdentifierToAstRawString(
+      const PreParserIdentifier& arg) {
+    // This method definition is only needed due to an MSVC oddity that
+    // instantiates the method despite it being unused. See crbug.com/v8/12266 .
+    UNREACHABLE();
   }
 
   IterationStatement* AsIterationStatement(BreakableStatement* s) {

@@ -17,6 +17,7 @@
 #include "src/base/vector.h"
 #include "src/flags/flags.h"
 #include "src/init/v8.h"
+#include "src/security/vm-cage.h"
 #include "src/utils/memcopy.h"
 
 #if V8_LIBC_BIONIC
@@ -70,7 +71,7 @@ class PageAllocatorInitializer {
 };
 
 DEFINE_LAZY_LEAKY_OBJECT_GETTER(PageAllocatorInitializer,
-                                GetPageTableInitializer)
+                                GetPageAllocatorInitializer)
 
 // We will attempt allocation this many times. After each failure, we call
 // OnCriticalMemoryPressure to try to free some memory.
@@ -79,14 +80,27 @@ const int kAllocationTries = 2;
 }  // namespace
 
 v8::PageAllocator* GetPlatformPageAllocator() {
-  DCHECK_NOT_NULL(GetPageTableInitializer()->page_allocator());
-  return GetPageTableInitializer()->page_allocator();
+  DCHECK_NOT_NULL(GetPageAllocatorInitializer()->page_allocator());
+  return GetPageAllocatorInitializer()->page_allocator();
 }
+
+#ifdef V8_VIRTUAL_MEMORY_CAGE
+v8::PageAllocator* GetVirtualMemoryCagePageAllocator() {
+  // TODO(chromium:1218005) remove this code once the cage is no longer
+  // optional.
+  if (GetProcessWideVirtualMemoryCage()->is_disabled()) {
+    return GetPlatformPageAllocator();
+  } else {
+    CHECK(GetProcessWideVirtualMemoryCage()->is_initialized());
+    return GetProcessWideVirtualMemoryCage()->page_allocator();
+  }
+}
+#endif
 
 v8::PageAllocator* SetPlatformPageAllocatorForTesting(
     v8::PageAllocator* new_page_allocator) {
   v8::PageAllocator* old_page_allocator = GetPlatformPageAllocator();
-  GetPageTableInitializer()->SetPageAllocatorForTesting(new_page_allocator);
+  GetPageAllocatorInitializer()->SetPageAllocatorForTesting(new_page_allocator);
   return old_page_allocator;
 }
 
@@ -117,10 +131,10 @@ char* StrNDup(const char* str, size_t n) {
   return result;
 }
 
-void* AllocWithRetry(size_t size) {
+void* AllocWithRetry(size_t size, MallocFn malloc_fn) {
   void* result = nullptr;
   for (int i = 0; i < kAllocationTries; ++i) {
-    result = base::Malloc(size);
+    result = malloc_fn(size);
     if (result != nullptr) break;
     if (!OnCriticalMemoryPressure(size)) break;
   }
@@ -323,7 +337,8 @@ inline Address VirtualMemoryCageStart(
 }
 }  // namespace
 
-bool VirtualMemoryCage::InitReservation(const ReservationParams& params) {
+bool VirtualMemoryCage::InitReservation(
+    const ReservationParams& params, base::AddressRegion existing_reservation) {
   DCHECK(!reservation_.IsReserved());
 
   const size_t allocate_page_size = params.page_allocator->AllocatePageSize();
@@ -333,13 +348,20 @@ bool VirtualMemoryCage::InitReservation(const ReservationParams& params) {
          IsAligned(params.base_bias_size, allocate_page_size)));
   CHECK_LE(params.base_bias_size, params.reservation_size);
 
-  Address hint = RoundDown(params.requested_start_hint,
-                           RoundUp(params.base_alignment, allocate_page_size)) -
-                 RoundUp(params.base_bias_size, allocate_page_size);
-
-  if (params.base_alignment == ReservationParams::kAnyBaseAlignment) {
+  if (!existing_reservation.is_empty()) {
+    CHECK_EQ(existing_reservation.size(), params.reservation_size);
+    CHECK(params.base_alignment == ReservationParams::kAnyBaseAlignment ||
+          IsAligned(existing_reservation.begin(), params.base_alignment));
+    reservation_ =
+        VirtualMemory(params.page_allocator, existing_reservation.begin(),
+                      existing_reservation.size());
+    base_ = reservation_.address() + params.base_bias_size;
+  } else if (params.base_alignment == ReservationParams::kAnyBaseAlignment) {
     // When the base doesn't need to be aligned, the virtual memory reservation
     // fails only due to OOM.
+    Address hint =
+        RoundDown(params.requested_start_hint,
+                  RoundUp(params.base_alignment, allocate_page_size));
     VirtualMemory reservation(params.page_allocator, params.reservation_size,
                               reinterpret_cast<void*>(hint));
     if (!reservation.IsReserved()) return false;
@@ -351,6 +373,10 @@ bool VirtualMemoryCage::InitReservation(const ReservationParams& params) {
     // Otherwise, we need to try harder by first overreserving
     // in hopes of finding a correctly aligned address within the larger
     // reservation.
+    Address hint =
+        RoundDown(params.requested_start_hint,
+                  RoundUp(params.base_alignment, allocate_page_size)) -
+        RoundUp(params.base_bias_size, allocate_page_size);
     const int kMaxAttempts = 4;
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
       // Reserve a region of twice the size so that there is an aligned address
@@ -418,7 +444,8 @@ bool VirtualMemoryCage::InitReservation(const ReservationParams& params) {
                 params.page_size);
   page_allocator_ = std::make_unique<base::BoundedPageAllocator>(
       params.page_allocator, allocatable_base, allocatable_size,
-      params.page_size);
+      params.page_size,
+      base::PageInitializationMode::kAllocatedPagesCanBeUninitialized);
   return true;
 }
 

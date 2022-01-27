@@ -5,11 +5,11 @@
 #ifndef V8_OBJECTS_CONTEXTS_H_
 #define V8_OBJECTS_CONTEXTS_H_
 
+#include "include/v8-promise.h"
 #include "src/objects/fixed-array.h"
 #include "src/objects/function-kind.h"
 #include "src/objects/ordered-hash-table.h"
 #include "src/objects/osr-optimized-code-cache.h"
-#include "torque-generated/field-offsets.h"
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
 
@@ -43,13 +43,8 @@ enum ContextLookupFlags {
   V(GENERATOR_NEXT_INTERNAL, JSFunction, generator_next_internal) \
   V(ASYNC_MODULE_EVALUATE_INTERNAL, JSFunction,                   \
     async_module_evaluate_internal)                               \
-  V(OBJECT_CREATE, JSFunction, object_create)                     \
   V(REFLECT_APPLY_INDEX, JSFunction, reflect_apply)               \
   V(REFLECT_CONSTRUCT_INDEX, JSFunction, reflect_construct)       \
-  V(MATH_FLOOR_INDEX, JSFunction, math_floor)                     \
-  V(MATH_POW_INDEX, JSFunction, math_pow)                         \
-  V(PROMISE_INTERNAL_CONSTRUCTOR_INDEX, JSFunction,               \
-    promise_internal_constructor)                                 \
   V(PROMISE_THEN_INDEX, JSFunction, promise_then)                 \
   V(FUNCTION_PROTOTYPE_APPLY_INDEX, JSFunction, function_prototype_apply)
 
@@ -132,8 +127,6 @@ enum ContextLookupFlags {
   V(GENERATOR_OBJECT_PROTOTYPE_MAP_INDEX, Map, generator_object_prototype_map) \
   V(ASYNC_GENERATOR_OBJECT_PROTOTYPE_MAP_INDEX, Map,                           \
     async_generator_object_prototype_map)                                      \
-  V(GROWABLE_SHARED_ARRAY_BUFFER_FUN_INDEX, JSFunction,                        \
-    growable_shared_array_buffer_fun)                                          \
   V(INITIAL_ARRAY_ITERATOR_MAP_INDEX, Map, initial_array_iterator_map)         \
   V(INITIAL_ARRAY_ITERATOR_PROTOTYPE_INDEX, JSObject,                          \
     initial_array_iterator_prototype)                                          \
@@ -195,6 +188,25 @@ enum ContextLookupFlags {
   V(JS_WEAK_REF_FUNCTION_INDEX, JSFunction, js_weak_ref_fun)                   \
   V(JS_FINALIZATION_REGISTRY_FUNCTION_INDEX, JSFunction,                       \
     js_finalization_registry_fun)                                              \
+  V(JS_TEMPORAL_CALENDAR_FUNCTION_INDEX, JSFunction,                           \
+    temporal_calendar_function)                                                \
+  V(JS_TEMPORAL_DURATION_FUNCTION_INDEX, JSFunction,                           \
+    temporal_duration_function)                                                \
+  V(JS_TEMPORAL_INSTANT_FUNCTION_INDEX, JSFunction, temporal_instant_function) \
+  V(JS_TEMPORAL_PLAIN_DATE_FUNCTION_INDEX, JSFunction,                         \
+    temporal_plain_date_function)                                              \
+  V(JS_TEMPORAL_PLAIN_DATE_TIME_FUNCTION_INDEX, JSFunction,                    \
+    temporal_plain_date_time_function)                                         \
+  V(JS_TEMPORAL_PLAIN_MONTH_DAY_FUNCTION_INDEX, JSFunction,                    \
+    temporal_plain_month_day_function)                                         \
+  V(JS_TEMPORAL_PLAIN_TIME_FUNCTION_INDEX, JSFunction,                         \
+    temporal_plain_time_function)                                              \
+  V(JS_TEMPORAL_PLAIN_YEAR_MONTH_FUNCTION_INDEX, JSFunction,                   \
+    temporal_plain_year_month_function)                                        \
+  V(JS_TEMPORAL_TIME_ZONE_FUNCTION_INDEX, JSFunction,                          \
+    temporal_time_zone_function)                                               \
+  V(JS_TEMPORAL_ZONED_DATE_TIME_FUNCTION_INDEX, JSFunction,                    \
+    temporal_zoned_date_time_function)                                         \
   /* Context maps */                                                           \
   V(NATIVE_CONTEXT_MAP_INDEX, Map, native_context_map)                         \
   V(FUNCTION_CONTEXT_MAP_INDEX, Map, function_context_map)                     \
@@ -245,7 +257,6 @@ enum ContextLookupFlags {
   V(REGEXP_SPLIT_FUNCTION_INDEX, JSFunction, regexp_split_function)            \
   V(INITIAL_REGEXP_STRING_ITERATOR_PROTOTYPE_MAP_INDEX, Map,                   \
     initial_regexp_string_iterator_prototype_map)                              \
-  V(RESIZABLE_ARRAY_BUFFER_FUN_INDEX, JSFunction, resizable_array_buffer_fun)  \
   V(SCRIPT_CONTEXT_TABLE_INDEX, ScriptContextTable, script_context_table)      \
   V(SCRIPT_EXECUTION_CALLBACK_INDEX, Object, script_execution_callback)        \
   V(SECURITY_TOKEN_INDEX, Object, security_token)                              \
@@ -294,6 +305,7 @@ enum ContextLookupFlags {
   V(STRING_FUNCTION_PROTOTYPE_MAP_INDEX, Map, string_function_prototype_map)   \
   V(SYMBOL_FUNCTION_INDEX, JSFunction, symbol_function)                        \
   V(WASM_EXPORTED_FUNCTION_MAP_INDEX, Map, wasm_exported_function_map)         \
+  V(WASM_TAG_CONSTRUCTOR_INDEX, JSFunction, wasm_tag_constructor)              \
   V(WASM_EXCEPTION_CONSTRUCTOR_INDEX, JSFunction, wasm_exception_constructor)  \
   V(WASM_GLOBAL_CONSTRUCTOR_INDEX, JSFunction, wasm_global_constructor)        \
   V(WASM_INSTANCE_CONSTRUCTOR_INDEX, JSFunction, wasm_instance_constructor)    \
@@ -339,6 +351,8 @@ enum ContextLookupFlags {
   V(WASM_LINK_ERROR_FUNCTION_INDEX, JSFunction, wasm_link_error_function)      \
   V(WASM_RUNTIME_ERROR_FUNCTION_INDEX, JSFunction,                             \
     wasm_runtime_error_function)                                               \
+  V(WASM_EXCEPTION_ERROR_FUNCTION_INDEX, JSFunction,                           \
+    wasm_exception_error_function)                                             \
   V(WEAKMAP_SET_INDEX, JSFunction, weakmap_set)                                \
   V(WEAKMAP_GET_INDEX, JSFunction, weakmap_get)                                \
   V(WEAKMAP_DELETE_INDEX, JSFunction, weakmap_delete)                          \
@@ -365,6 +379,7 @@ class ScriptContextTable : public FixedArray {
                                            Handle<ScriptContextTable> table,
                                            int i);
   inline Context get_context(int i) const;
+  inline Context get_context(int i, AcquireLoadTag tag) const;
 
   // Lookup a variable `name` in a ScriptContextTable.
   // If it returns true, the variable is found and `result` contains
@@ -435,6 +450,10 @@ class ScriptContextTable : public FixedArray {
 class Context : public TorqueGeneratedContext<Context, HeapObject> {
  public:
   NEVER_READ_ONLY_SPACE
+
+  using TorqueGeneratedContext::length;      // Non-atomic.
+  using TorqueGeneratedContext::set_length;  // Non-atomic.
+  DECL_RELAXED_SMI_ACCESSORS(length)
 
   // Setter and getter for elements.
   // Note the plain accessors use relaxed semantics.
@@ -542,39 +561,39 @@ class Context : public TorqueGeneratedContext<Context, HeapObject> {
   inline void set_scope_info(ScopeInfo scope_info,
                              WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 
-  inline Object unchecked_previous();
-  inline Context previous();
+  inline Object unchecked_previous() const;
+  inline Context previous() const;
 
-  inline Object next_context_link();
+  inline Object next_context_link() const;
 
-  inline bool has_extension();
-  inline HeapObject extension();
-  inline void set_extension(HeapObject object,
-                            WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
-  JSObject extension_object();
-  JSReceiver extension_receiver();
-  V8_EXPORT_PRIVATE ScopeInfo scope_info();
+  inline bool has_extension() const;
+  inline HeapObject extension() const;
+  V8_EXPORT_PRIVATE void set_extension(
+      HeapObject object, WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
+  JSObject extension_object() const;
+  JSReceiver extension_receiver() const;
+  V8_EXPORT_PRIVATE inline ScopeInfo scope_info() const;
 
   // Find the module context (assuming there is one) and return the associated
   // module object.
-  SourceTextModule module();
+  SourceTextModule module() const;
 
   // Get the context where var declarations will be hoisted to, which
   // may be the context itself.
-  Context declaration_context();
-  bool is_declaration_context();
+  Context declaration_context() const;
+  bool is_declaration_context() const;
 
   // Get the next closure's context on the context chain.
-  Context closure_context();
+  Context closure_context() const;
 
   // Returns a JSGlobalProxy object or null.
-  V8_EXPORT_PRIVATE JSGlobalProxy global_proxy();
+  V8_EXPORT_PRIVATE JSGlobalProxy global_proxy() const;
 
   // Get the JSGlobalObject object.
-  V8_EXPORT_PRIVATE JSGlobalObject global_object();
+  V8_EXPORT_PRIVATE JSGlobalObject global_object() const;
 
   // Get the script context by traversing the context chain.
-  Context script_context();
+  Context script_context() const;
 
   // Compute the native context.
   inline NativeContext native_context() const;
@@ -651,6 +670,10 @@ class Context : public TorqueGeneratedContext<Context, HeapObject> {
   DECL_VERIFIER(Context)
 
   class BodyDescriptor;
+
+#ifdef VERIFY_HEAP
+  V8_EXPORT_PRIVATE void VerifyExtensionSlot(HeapObject extension);
+#endif
 
  private:
 #ifdef DEBUG

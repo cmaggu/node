@@ -15,7 +15,7 @@
 #include "node_process-inl.h"
 #include "node_url.h"
 #include "util-inl.h"
-#include "timer_wrap.h"
+#include "timer_wrap-inl.h"
 #include "v8-inspector.h"
 #include "v8-platform.h"
 
@@ -87,7 +87,6 @@ inline void* StartIoThreadMain(void* unused) {
     if (agent != nullptr)
       agent->RequestIoThreadStart();
   }
-  return nullptr;
 }
 
 static int StartDebugSignalHandler() {

@@ -147,6 +147,16 @@
     # Sets -dV8_TRACE_FEEDBACK_UPDATES.
     'v8_enable_trace_feedback_updates%': 0,
 
+    # Sets -dV8_ATOMIC_OBJECT_FIELD_WRITES and turns all field write operations
+    # into relaxed atomic operations.
+    'v8_enable_atomic_object_field_writes%': 1,
+
+    # Sets -dV8_ATOMIC_MARKING_STATE
+    'v8_enable_atomic_marking_state%': 1,
+
+    # Has no effect in Node.js. Here for completeness with V8's config.
+    'v8_enable_concurrent_marking%': 1,
+
     # Enables various testing features.
     'v8_enable_test_features%': 0,
 
@@ -168,9 +178,6 @@
 
     # Controls the threshold for on-heap/off-heap Typed Arrays.
     'v8_typed_array_max_size_in_heap%': 64,
-
-    # Enable mitigations for executing untrusted code.
-    'v8_untrusted_code_mitigations%': 1,
 
     # Enable minor mark compact.
     'v8_enable_minor_mc%': 1,
@@ -226,6 +233,8 @@
 
     # Enable global allocation site tracking.
     'v8_allocation_site_tracking%': 1,
+
+    'v8_scriptormodule_legacy_lifetime%': 1,
 
     # Variables from v8.gni
 
@@ -346,6 +355,12 @@
       ['v8_enable_third_party_heap==1', {
         'defines': ['V8_ENABLE_THIRD_PARTY_HEAP',],
       }],
+      ['v8_enable_atomic_object_field_writes==1', {
+        'defines': ['V8_ATOMIC_OBJECT_FIELD_WRITES',],
+      }],
+      ['v8_enable_atomic_marking_state==1', {
+        'defines': ['V8_ATOMIC_MARKING_STATE',],
+      }],
       ['v8_enable_lazy_source_positions==1', {
         'defines': ['V8_ENABLE_LAZY_SOURCE_POSITIONS',],
       }],
@@ -357,9 +372,6 @@
       }],
       ['v8_enable_verify_csa==1', {
         'defines': ['ENABLE_VERIFY_CSA',],
-      }],
-      ['v8_untrusted_code_mitigations==0', {
-        'defines': ['DISABLE_UNTRUSTED_CODE_MITIGATIONS',],
       }],
       ['v8_use_perfetto==1', {
         'defines': ['V8_USE_PERFETTO',],
@@ -393,6 +405,12 @@
       }],
       ['v8_allocation_site_tracking==1', {
         'defines': ['V8_ALLOCATION_SITE_TRACKING',],
+      }],
+      ['v8_scriptormodule_legacy_lifetime==1', {
+        'defines': ['V8_SCRIPTORMODULE_LEGACY_LIFETIME',],
+      }],
+      ['v8_advanced_bigint_algorithms==1', {
+        'defines': ['V8_ADVANCED_BIGINT_ALGORITHMS',],
       }],
     ],  # conditions
     'defines': [

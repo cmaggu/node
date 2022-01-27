@@ -11,8 +11,9 @@ const cleanOutput = (str, path) => normalizePath(str)
 
 const clean = (res, path) => {
   const cleaned = new Map()
-  for (const [key, value] of res.entries())
+  for (const [key, value] of res.entries()) {
     cleaned.set(key, cleanOutput(value, path))
+  }
   return cleaned
 }
 
@@ -84,6 +85,17 @@ t.test('get-workspaces', async t => {
       b: '{PATH}/packages/b',
     })),
     'should filter by package name'
+  )
+
+  workspaces = await getWorkspaces(['a', 'b'], { path, includeWorkspaceRoot: true })
+  t.same(
+    clean(workspaces, path),
+    new Map(Object.entries({
+      x: '{PATH}',
+      a: '{PATH}/packages/a',
+      b: '{PATH}/packages/b',
+    })),
+    'include rootspace root'
   )
 
   workspaces = await getWorkspaces(['./packages/c'], { path })

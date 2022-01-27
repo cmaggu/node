@@ -34,6 +34,7 @@
 #include "handle_wrap.h"
 #include "node.h"
 #include "node_binding.h"
+#include "node_external_reference.h"
 #include "node_main_instance.h"
 #include "node_options.h"
 #include "node_perf_common.h"
@@ -47,8 +48,11 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
-#include <iostream>
 #include <list>
+#include <memory>
+#include <ostream>
+#include <set>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -170,6 +174,7 @@ constexpr size_t kFsStatsBufferLength =
   V(oninit_symbol, "oninit")                                                   \
   V(owner_symbol, "owner_symbol")                                              \
   V(onpskexchange_symbol, "onpskexchange")                                     \
+  V(resource_symbol, "resource_symbol")                                        \
   V(trigger_async_id_symbol, "trigger_async_id_symbol")                        \
 
 // Strings are per-isolate primitives but Environment proxies them
@@ -256,6 +261,7 @@ constexpr size_t kFsStatsBufferLength =
   V(file_string, "file")                                                       \
   V(filename_string, "filename")                                               \
   V(fingerprint256_string, "fingerprint256")                                   \
+  V(fingerprint512_string, "fingerprint512")                                   \
   V(fingerprint_string, "fingerprint")                                         \
   V(flags_string, "flags")                                                     \
   V(flowlabel_string, "flowlabel")                                             \
@@ -716,8 +722,11 @@ class AsyncHooks : public MemoryRetainer {
   inline void no_force_checks();
   inline Environment* env();
 
+  // NB: This call does not take (co-)ownership of `execution_async_resource`.
+  // The lifetime of the `v8::Local<>` pointee must last until
+  // `pop_async_context()` or `clear_async_id_stack()` are called.
   inline void push_async_context(double async_id, double trigger_async_id,
-      v8::Local<v8::Object> execution_async_resource_);
+      v8::Local<v8::Object> execution_async_resource);
   inline bool pop_async_context(double async_id);
   inline void clear_async_id_stack();  // Used in fatal exceptions.
 
@@ -768,6 +777,8 @@ class AsyncHooks : public MemoryRetainer {
   friend class Environment;  // So we can call the constructor.
   explicit AsyncHooks(v8::Isolate* isolate, const SerializeInfo* info);
 
+  [[noreturn]] void FailWithCorruptedAsyncStack(double expected_async_id);
+
   // Stores the ids of the current execution context stack.
   AliasedFloat64Array async_ids_stack_;
   // Attached to a Uint32Array that tracks the number of active hooks for
@@ -779,7 +790,7 @@ class AsyncHooks : public MemoryRetainer {
   void grow_async_ids_stack();
 
   v8::Global<v8::Array> js_execution_async_resources_;
-  std::vector<v8::Global<v8::Object>> native_execution_async_resources_;
+  std::vector<v8::Local<v8::Object>> native_execution_async_resources_;
 
   // Non-empty during deserialization
   const SerializeInfo* info_ = nullptr;
@@ -1197,11 +1208,14 @@ class Environment : public MemoryRetainer {
   inline void set_has_serialized_options(bool has_serialized_options);
 
   inline bool is_main_thread() const;
+  inline bool no_native_addons() const;
   inline bool should_not_register_esm_loader() const;
   inline bool owns_process_state() const;
   inline bool owns_inspector() const;
   inline bool tracks_unmanaged_fds() const;
   inline bool hide_console_windows() const;
+  inline bool no_global_search_paths() const;
+  inline bool no_browser_globals() const;
   inline uint64_t thread_id() const;
   inline worker::Worker* worker_context() const;
   Environment* worker_parent_env() const;
@@ -1236,19 +1250,22 @@ class Environment : public MemoryRetainer {
                                const char* path = nullptr,
                                const char* dest = nullptr);
 
-  inline v8::Local<v8::FunctionTemplate>
-      NewFunctionTemplate(v8::FunctionCallback callback,
-                          v8::Local<v8::Signature> signature =
-                              v8::Local<v8::Signature>(),
-                          v8::ConstructorBehavior behavior =
-                              v8::ConstructorBehavior::kAllow,
-                          v8::SideEffectType side_effect =
-                              v8::SideEffectType::kHasSideEffect);
+  inline v8::Local<v8::FunctionTemplate> NewFunctionTemplate(
+      v8::FunctionCallback callback,
+      v8::Local<v8::Signature> signature = v8::Local<v8::Signature>(),
+      v8::ConstructorBehavior behavior = v8::ConstructorBehavior::kAllow,
+      v8::SideEffectType side_effect = v8::SideEffectType::kHasSideEffect,
+      const v8::CFunction* c_function = nullptr);
 
   // Convenience methods for NewFunctionTemplate().
   inline void SetMethod(v8::Local<v8::Object> that,
                         const char* name,
                         v8::FunctionCallback callback);
+
+  inline void SetFastMethod(v8::Local<v8::Object> that,
+                            const char* name,
+                            v8::FunctionCallback slow_callback,
+                            const v8::CFunction* c_function);
 
   inline void SetProtoMethod(v8::Local<v8::FunctionTemplate> that,
                              const char* name,
@@ -1436,6 +1453,9 @@ class Environment : public MemoryRetainer {
   void RunAndClearNativeImmediates(bool only_refed = false);
   void RunAndClearInterrupts();
 
+  inline uv_buf_t allocate_managed_buffer(const size_t suggested_size);
+  inline std::unique_ptr<v8::BackingStore> release_managed_buffer(
+      const uv_buf_t& buf);
   inline std::unordered_map<char*, std::unique_ptr<v8::BackingStore>>*
       released_allocated_buffers();
 
@@ -1541,7 +1561,7 @@ class Environment : public MemoryRetainer {
   // src/node_postmortem_metadata.cc to calculate offsets and generate debug
   // symbols for Environment, which assumes that the position of members in
   // memory are predictable. For more information please refer to
-  // `doc/guides/node-postmortem-support.md`
+  // `doc/contributing/node-postmortem-support.md`
   friend int GenDebugSymbols();
   HandleWrapQueue handle_wrap_queue_;
   ReqWrapQueue req_wrap_queue_;

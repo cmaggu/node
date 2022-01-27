@@ -197,15 +197,24 @@ const customTypesMap = {
   'PerformanceObserverEntryList':
     'perf_hooks.html#class-performanceobserverentrylist',
 
-  'readline.Interface': 'readline.html#class-interface',
+  'readline.Interface':
+    'readline.html#class-readlineinterface',
+  'readline.InterfaceConstructor':
+    'readline.html#class-interfaceconstructor',
+  'readlinePromises.Interface':
+    'readline.html#class-readlinepromisesinterface',
 
   'repl.REPLServer': 'repl.html#class-replserver',
 
   'Stream': 'stream.html#stream',
   'stream.Duplex': 'stream.html#class-streamduplex',
+  'Duplex': 'stream.html#class-streamduplex',
   'stream.Readable': 'stream.html#class-streamreadable',
+  'Readable': 'stream.html#class-streamreadable',
   'stream.Transform': 'stream.html#class-streamtransform',
+  'Transform': 'stream.html#class-streamtransform',
   'stream.Writable': 'stream.html#class-streamwritable',
+  'Writable': 'stream.html#class-streamwritable',
 
   'Immediate': 'timers.html#class-immediate',
   'Timeout': 'timers.html#class-timeout',

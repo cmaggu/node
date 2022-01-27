@@ -139,15 +139,6 @@ void Code::RelocateFromDesc(ByteArray reloc_info, Heap* heap,
   }
 }
 
-#ifdef VERIFY_HEAP
-void Code::VerifyRelocInfo(Isolate* isolate, ByteArray reloc_info) {
-  const int mode_mask = RelocInfo::PostCodegenRelocationMask();
-  for (RelocIterator it(*this, reloc_info, mode_mask); !it.done(); it.next()) {
-    it.rinfo()->Verify(isolate);
-  }
-}
-#endif
-
 SafepointEntry Code::GetSafepointEntry(Isolate* isolate, Address pc) {
   SafepointTable table(isolate, pc, *this);
   return table.FindEntry(pc);
@@ -333,7 +324,7 @@ bool Code::IsIsolateIndependent(Isolate* isolate) {
 #elif defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_ARM64) || \
     defined(V8_TARGET_ARCH_ARM) || defined(V8_TARGET_ARCH_MIPS) ||    \
     defined(V8_TARGET_ARCH_S390) || defined(V8_TARGET_ARCH_IA32) ||   \
-    defined(V8_TARGET_ARCH_RISCV64)
+    defined(V8_TARGET_ARCH_RISCV64) || defined(V8_TARGET_ARCH_LOONG64)
   for (RelocIterator it(*this, kModeMask); !it.done(); it.next()) {
     // On these platforms we emit relative builtin-to-builtin
     // jumps for isolate independent builtins in the snapshot. They are later
@@ -349,10 +340,10 @@ bool Code::IsIsolateIndependent(Isolate* isolate) {
     }
     return false;
   }
+  return true;
 #else
 #error Unsupported architecture.
 #endif
-  return true;
 }
 
 bool Code::Inlines(SharedFunctionInfo sfi) {
@@ -460,13 +451,21 @@ void DeoptimizationData::DeoptimizationDataPrint(std::ostream& os) {
   int deopt_count = DeoptCount();
   os << "Deoptimization Input Data (deopt points = " << deopt_count << ")\n";
   if (0 != deopt_count) {
+#ifdef DEBUG
+    os << " index  bytecode-offset  node-id    pc";
+#else   // DEBUG
     os << " index  bytecode-offset    pc";
+#endif  // DEBUG
     if (FLAG_print_code_verbose) os << "  commands";
     os << "\n";
   }
   for (int i = 0; i < deopt_count; i++) {
     os << std::setw(6) << i << "  " << std::setw(15)
-       << GetBytecodeOffset(i).ToInt() << "  " << std::setw(4);
+       << GetBytecodeOffset(i).ToInt() << "  "
+#ifdef DEBUG
+       << std::setw(7) << NodeId(i).value() << "  "
+#endif  // DEBUG
+       << std::setw(4);
     print_pc(os, Pc(i).value());
     os << std::setw(2);
 
@@ -767,7 +766,7 @@ void DependentCode::SetDependentCode(Handle<HeapObject> object,
 void DependentCode::InstallDependency(Isolate* isolate, Handle<Code> code,
                                       Handle<HeapObject> object,
                                       DependencyGroup group) {
-  if (V8_UNLIKELY(FLAG_trace_code_dependencies)) {
+  if (V8_UNLIKELY(FLAG_trace_compilation_dependencies)) {
     StdoutStream{} << "Installing dependency of [" << code->GetHeapObject()
                    << "] on [" << object << "] in group ["
                    << DependencyGroupName(group) << "]\n";

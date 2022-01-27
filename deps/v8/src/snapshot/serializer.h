@@ -204,6 +204,10 @@ class Serializer : public SerializerDeserializer {
     Serializer* serializer_;
   };
 
+  // Compares obj with not_mapped_symbol root. When V8_EXTERNAL_CODE_SPACE is
+  // enabled it compares full pointers.
+  V8_INLINE bool IsNotMappedSymbol(HeapObject obj) const;
+
   void SerializeDeferredObjects();
   void SerializeObject(Handle<HeapObject> o);
   virtual void SerializeObjectImpl(Handle<HeapObject> o) = 0;
@@ -280,7 +284,7 @@ class Serializer : public SerializerDeserializer {
 
 #ifdef DEBUG
   void PushStack(Handle<HeapObject> o) { stack_.Push(*o); }
-  void PopStack() { stack_.Pop(); }
+  void PopStack();
   void PrintStack();
   void PrintStack(std::ostream&);
 #endif  // DEBUG
@@ -425,6 +429,7 @@ class Serializer::ObjectSerializer : public ObjectVisitor {
                      ObjectSlot end) override;
   void VisitPointers(HeapObject host, MaybeObjectSlot start,
                      MaybeObjectSlot end) override;
+  void VisitCodePointer(HeapObject host, CodeObjectSlot slot) override;
   void VisitEmbeddedPointer(Code host, RelocInfo* target) override;
   void VisitExternalReference(Foreign host, Address* p) override;
   void VisitExternalReference(Code host, RelocInfo* rinfo) override;

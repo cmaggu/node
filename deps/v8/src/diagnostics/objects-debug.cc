@@ -33,6 +33,7 @@
 #include "src/objects/js-array-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/objects.h"
+#include "src/objects/turbofan-types-inl.h"
 #include "src/roots/roots.h"
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/js-break-iterator-inl.h"
@@ -58,6 +59,7 @@
 #include "src/objects/js-segmenter-inl.h"
 #include "src/objects/js-segments-inl.h"
 #endif  // V8_INTL_SUPPORT
+#include "src/objects/js-temporal-objects-inl.h"
 #include "src/objects/js-weak-refs-inl.h"
 #include "src/objects/literal-objects-inl.h"
 #include "src/objects/maybe-object.h"
@@ -123,7 +125,8 @@ void Object::ObjectVerify(Isolate* isolate) {
   } else {
     HeapObject::cast(*this).HeapObjectVerify(isolate);
   }
-  CHECK(!IsConstructor() || IsCallable());
+  PtrComprCageBase cage_base(isolate);
+  CHECK(!IsConstructor(cage_base) || IsCallable(cage_base));
 }
 
 void Object::VerifyPointer(Isolate* isolate, Object p) {
@@ -166,7 +169,9 @@ void TaggedIndex::TaggedIndexVerify(Isolate* isolate) {
 }
 
 void HeapObject::HeapObjectVerify(Isolate* isolate) {
-  TorqueGeneratedClassVerifiers::HeapObjectVerify(*this, isolate);
+  CHECK(IsHeapObject());
+  VerifyPointer(isolate, map(isolate));
+  CHECK(map(isolate).IsMap());
 
   switch (map().instance_type()) {
 #define STRING_TYPE_CASE(TYPE, size, name, CamelName) case TYPE:
@@ -289,6 +294,11 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
       StoreHandler::cast(*this).StoreHandlerVerify(isolate);
       break;
 
+    case BIG_INT_BASE_TYPE:
+      BigIntBase::cast(*this).BigIntBaseVerify(isolate);
+      break;
+
+    case JS_CLASS_CONSTRUCTOR_TYPE:
     case JS_PROMISE_CONSTRUCTOR_TYPE:
     case JS_REG_EXP_CONSTRUCTOR_TYPE:
     case JS_ARRAY_CONSTRUCTOR_TYPE:
@@ -298,6 +308,8 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
 #undef TYPED_ARRAY_CONSTRUCTORS_SWITCH
       JSFunction::cast(*this).JSFunctionVerify(isolate);
       break;
+    case JS_LAST_DUMMY_API_OBJECT_TYPE:
+      UNREACHABLE();
   }
 }
 
@@ -311,8 +323,9 @@ void HeapObject::VerifyHeapPointer(Isolate* isolate, Object p) {
 // static
 void HeapObject::VerifyCodePointer(Isolate* isolate, Object p) {
   CHECK(p.IsHeapObject());
-  CHECK(isolate->heap()->InCodeSpace(HeapObject::cast(p)));
-  CHECK(HeapObject::cast(p).IsCode());
+  CHECK(IsValidCodeObject(isolate->heap(), HeapObject::cast(p)));
+  PtrComprCageBase cage_base(isolate);
+  CHECK(HeapObject::cast(p).IsCode(cage_base));
 }
 
 void Symbol::SymbolVerify(Isolate* isolate) {
@@ -330,22 +343,12 @@ void BytecodeArray::BytecodeArrayVerify(Isolate* isolate) {
   // - Jumps must go to new instructions starts.
   // - No Illegal bytecodes.
   // - No consecutive sequences of prefix Wide / ExtraWide.
-  CHECK(IsBytecodeArray(isolate));
-  CHECK(constant_pool(isolate).IsFixedArray(isolate));
-  VerifyHeapPointer(isolate, constant_pool(isolate));
-  {
-    Object table = source_position_table(isolate, kAcquireLoad);
-    CHECK(table.IsUndefined(isolate) || table.IsException(isolate) ||
-          table.IsByteArray(isolate));
-  }
-  CHECK(handler_table(isolate).IsByteArray(isolate));
+  TorqueGeneratedClassVerifiers::BytecodeArrayVerify(*this, isolate);
   for (int i = 0; i < constant_pool(isolate).length(); ++i) {
     // No ThinStrings in the constant pool.
     CHECK(!constant_pool(isolate).get(isolate, i).IsThinString(isolate));
   }
 }
-
-USE_TORQUE_VERIFIER(JSReceiver)
 
 bool JSObject::ElementsAreSafeToExamine(PtrComprCageBase cage_base) const {
   // If a GC was caused while constructing this object, the elements
@@ -421,7 +424,7 @@ void JSObject::JSObjectVerify(Isolate* isolate) {
 
     for (InternalIndex i : map().IterateOwnDescriptors()) {
       PropertyDetails details = descriptors.GetDetails(i);
-      if (details.location() == kField) {
+      if (details.location() == PropertyLocation::kField) {
         DCHECK_EQ(kData, details.kind());
         Representation r = details.representation();
         FieldIndex index = FieldIndex::ForDescriptor(map(), i);
@@ -604,6 +607,7 @@ void FixedDoubleArray::FixedDoubleArrayVerify(Isolate* isolate) {
 }
 
 void Context::ContextVerify(Isolate* isolate) {
+  if (has_extension()) VerifyExtensionSlot(extension());
   TorqueGeneratedClassVerifiers::ContextVerify(*this, isolate);
   for (int i = 0; i < length(); i++) {
     VerifyObjectField(isolate, OffsetOfElementAt(i));
@@ -656,7 +660,7 @@ void DescriptorArray::DescriptorArrayVerify(Isolate* isolate) {
       }
       MaybeObject value = GetValue(descriptor);
       HeapObject heap_object;
-      if (details.location() == kField) {
+      if (details.location() == PropertyLocation::kField) {
         CHECK_EQ(details.field_index(), expected_field_index);
         CHECK(
             value == MaybeObject::FromObject(FieldType::None()) ||
@@ -787,8 +791,6 @@ void JSDate::JSDateVerify(Isolate* isolate) {
   }
 }
 
-USE_TORQUE_VERIFIER(JSMessageObject)
-
 void String::StringVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::StringVerify(*this, isolate);
   CHECK(length() >= 0 && length() <= Smi::kMaxValue);
@@ -832,7 +834,24 @@ void JSBoundFunction::JSBoundFunctionVerify(Isolate* isolate) {
 }
 
 void JSFunction::JSFunctionVerify(Isolate* isolate) {
-  TorqueGeneratedClassVerifiers::JSFunctionVerify(*this, isolate);
+  // Don't call TorqueGeneratedClassVerifiers::JSFunctionVerify here because the
+  // Torque class definition contains the field `prototype_or_initial_map` which
+  // may not be allocated.
+
+  // This assertion exists to encourage updating this verification function if
+  // new fields are added in the Torque class layout definition.
+  STATIC_ASSERT(JSFunction::TorqueGeneratedClass::kHeaderSize ==
+                8 * kTaggedSize);
+
+  JSFunctionOrBoundFunctionVerify(isolate);
+  CHECK(IsJSFunction());
+  VerifyPointer(isolate, shared(isolate));
+  CHECK(shared(isolate).IsSharedFunctionInfo());
+  VerifyPointer(isolate, context(isolate, kRelaxedLoad));
+  CHECK(context(isolate, kRelaxedLoad).IsContext());
+  VerifyPointer(isolate, raw_feedback_cell(isolate));
+  CHECK(raw_feedback_cell(isolate).IsFeedbackCell());
+  VerifyPointer(isolate, raw_code(isolate));
   CHECK(raw_code(isolate).IsCodeT());
   CHECK(map(isolate).is_callable());
   Handle<JSFunction> function(*this, isolate);
@@ -1007,8 +1026,11 @@ void Code::CodeVerify(Isolate* isolate) {
   CHECK_LE(constant_pool_offset(), code_comments_offset());
   CHECK_LE(code_comments_offset(), unwinding_info_offset());
   CHECK_LE(unwinding_info_offset(), MetadataSize());
+#if !defined(_MSC_VER) || defined(__clang__)
+  // See also: PlatformEmbeddedFileWriterWin::AlignToCodeAlignment.
   CHECK_IMPLIES(!ReadOnlyHeap::Contains(*this),
                 IsAligned(InstructionStart(), kCodeAlignment));
+#endif  // !defined(_MSC_VER) || defined(__clang__)
   CHECK_IMPLIES(!ReadOnlyHeap::Contains(*this),
                 IsAligned(raw_instruction_start(), kCodeAlignment));
   if (V8_EXTERNAL_CODE_SPACE_BOOL) {
@@ -1019,23 +1041,20 @@ void Code::CodeVerify(Isolate* isolate) {
   // CodeVerify is called halfway through constructing the trampoline and so not
   // everything is set up.
   // CHECK_EQ(ReadOnlyHeap::Contains(*this), !IsExecutable());
-  HeapObject relocation_info = relocation_info_or_undefined();
-  if (!relocation_info.IsUndefined()) {
-    ByteArray::cast(relocation_info).ObjectVerify(isolate);
-    Address last_gc_pc = kNullAddress;
-    for (RelocIterator it(*this); !it.done(); it.next()) {
-      it.rinfo()->Verify(isolate);
-      // Ensure that GC will not iterate twice over the same pointer.
-      if (RelocInfo::IsGCRelocMode(it.rinfo()->rmode())) {
-        CHECK(it.rinfo()->pc() != last_gc_pc);
-        last_gc_pc = it.rinfo()->pc();
-      }
-    }
-  }
-
+  relocation_info().ObjectVerify(isolate);
   CHECK(V8_ENABLE_THIRD_PARTY_HEAP_BOOL ||
         CodeSize() <= MemoryChunkLayout::MaxRegularCodeObjectSize() ||
         isolate->heap()->InSpace(*this, CODE_LO_SPACE));
+  Address last_gc_pc = kNullAddress;
+
+  for (RelocIterator it(*this); !it.done(); it.next()) {
+    it.rinfo()->Verify(isolate);
+    // Ensure that GC will not iterate twice over the same pointer.
+    if (RelocInfo::IsGCRelocMode(it.rinfo()->rmode())) {
+      CHECK(it.rinfo()->pc() != last_gc_pc);
+      last_gc_pc = it.rinfo()->pc();
+    }
+  }
 }
 
 void JSArray::JSArrayVerify(Isolate* isolate) {
@@ -1141,19 +1160,13 @@ void JSWeakRef::JSWeakRefVerify(Isolate* isolate) {
 }
 
 void JSFinalizationRegistry::JSFinalizationRegistryVerify(Isolate* isolate) {
-  CHECK(IsJSFinalizationRegistry());
-  JSObjectVerify(isolate);
-  VerifyHeapPointer(isolate, cleanup());
-  CHECK(active_cells().IsUndefined(isolate) || active_cells().IsWeakCell());
+  TorqueGeneratedClassVerifiers::JSFinalizationRegistryVerify(*this, isolate);
   if (active_cells().IsWeakCell()) {
     CHECK(WeakCell::cast(active_cells()).prev().IsUndefined(isolate));
   }
-  CHECK(cleared_cells().IsUndefined(isolate) || cleared_cells().IsWeakCell());
   if (cleared_cells().IsWeakCell()) {
     CHECK(WeakCell::cast(cleared_cells()).prev().IsUndefined(isolate));
   }
-  CHECK(next_dirty().IsUndefined(isolate) ||
-        next_dirty().IsJSFinalizationRegistry());
 }
 
 void JSWeakMap::JSWeakMapVerify(Isolate* isolate) {
@@ -1238,8 +1251,9 @@ void SmallOrderedHashTable<Derived>::SmallOrderedHashTableVerify(
     }
   }
 }
+
 void SmallOrderedHashMap::SmallOrderedHashMapVerify(Isolate* isolate) {
-  TorqueGeneratedClassVerifiers::SmallOrderedHashMapVerify(*this, isolate);
+  CHECK(IsSmallOrderedHashMap());
   SmallOrderedHashTable<SmallOrderedHashMap>::SmallOrderedHashTableVerify(
       isolate);
   for (int entry = NumberOfElements(); entry < NumberOfDeletedElements();
@@ -1252,7 +1266,7 @@ void SmallOrderedHashMap::SmallOrderedHashMapVerify(Isolate* isolate) {
 }
 
 void SmallOrderedHashSet::SmallOrderedHashSetVerify(Isolate* isolate) {
-  TorqueGeneratedClassVerifiers::SmallOrderedHashSetVerify(*this, isolate);
+  CHECK(IsSmallOrderedHashSet());
   SmallOrderedHashTable<SmallOrderedHashSet>::SmallOrderedHashTableVerify(
       isolate);
   for (int entry = NumberOfElements(); entry < NumberOfDeletedElements();
@@ -1266,8 +1280,7 @@ void SmallOrderedHashSet::SmallOrderedHashSetVerify(Isolate* isolate) {
 
 void SmallOrderedNameDictionary::SmallOrderedNameDictionaryVerify(
     Isolate* isolate) {
-  TorqueGeneratedClassVerifiers::SmallOrderedNameDictionaryVerify(*this,
-                                                                  isolate);
+  CHECK(IsSmallOrderedNameDictionary());
   SmallOrderedHashTable<
       SmallOrderedNameDictionary>::SmallOrderedHashTableVerify(isolate);
   for (int entry = NumberOfElements(); entry < NumberOfDeletedElements();
@@ -1357,7 +1370,7 @@ void SwissNameDictionary::SwissNameDictionaryVerify(Isolate* isolate,
 
 void JSRegExp::JSRegExpVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::JSRegExpVerify(*this, isolate);
-  switch (TypeTag()) {
+  switch (type_tag()) {
     case JSRegExp::ATOM: {
       FixedArray arr = FixedArray::cast(data());
       CHECK(arr.get(JSRegExp::kAtomPatternIndex).IsString());
@@ -1435,7 +1448,7 @@ void JSRegExp::JSRegExpVerify(Isolate* isolate) {
       break;
     }
     default:
-      CHECK_EQ(JSRegExp::NOT_COMPILED, TypeTag());
+      CHECK_EQ(JSRegExp::NOT_COMPILED, type_tag());
       CHECK(data().IsUndefined(isolate));
       break;
   }
@@ -1490,7 +1503,6 @@ void AsyncGeneratorRequest::AsyncGeneratorRequestVerify(Isolate* isolate) {
 }
 
 void BigIntBase::BigIntBaseVerify(Isolate* isolate) {
-  TorqueGeneratedClassVerifiers::BigIntBaseVerify(*this, isolate);
   CHECK_GE(length(), 0);
   CHECK_IMPLIES(is_zero(), !sign());  // There is no -0n.
 }
@@ -1512,7 +1524,7 @@ void Module::ModuleVerify(Isolate* isolate) {
   CHECK(module_namespace().IsUndefined(isolate) ||
         module_namespace().IsJSModuleNamespace());
   if (module_namespace().IsJSModuleNamespace()) {
-    CHECK_LE(Module::kInstantiating, status());
+    CHECK_LE(Module::kLinking, status());
     CHECK_EQ(JSModuleNamespace::cast(module_namespace()).module(), *this);
   }
 
@@ -1545,13 +1557,13 @@ void SourceTextModule::SourceTextModuleVerify(Isolate* isolate) {
   } else if (status() == kEvaluating || status() == kEvaluated) {
     CHECK(code().IsJSGeneratorObject());
   } else {
-    if (status() == kInstantiated) {
+    if (status() == kLinked) {
       CHECK(code().IsJSGeneratorObject());
-    } else if (status() == kInstantiating) {
+    } else if (status() == kLinking) {
       CHECK(code().IsJSFunction());
-    } else if (status() == kPreInstantiating) {
+    } else if (status() == kPreLinking) {
       CHECK(code().IsSharedFunctionInfo());
-    } else if (status() == kUninstantiated) {
+    } else if (status() == kUnlinked) {
       CHECK(code().IsSharedFunctionInfo());
     }
     CHECK(!AsyncParentModuleCount());
@@ -1655,18 +1667,31 @@ void WasmValueObject::WasmValueObjectVerify(Isolate* isolate) {
 void WasmExportedFunctionData::WasmExportedFunctionDataVerify(
     Isolate* isolate) {
   TorqueGeneratedClassVerifiers::WasmExportedFunctionDataVerify(*this, isolate);
-  CHECK(wrapper_code().kind() == CodeKind::JS_TO_WASM_FUNCTION ||
-        wrapper_code().kind() == CodeKind::C_WASM_ENTRY ||
-        (wrapper_code().is_builtin() &&
-         wrapper_code().builtin_id() == Builtin::kGenericJSToWasmWrapper));
+  CHECK(
+      wrapper_code().kind() == CodeKind::JS_TO_WASM_FUNCTION ||
+      wrapper_code().kind() == CodeKind::C_WASM_ENTRY ||
+      (wrapper_code().is_builtin() &&
+       (wrapper_code().builtin_id() == Builtin::kGenericJSToWasmWrapper ||
+        wrapper_code().builtin_id() == Builtin::kWasmReturnPromiseOnSuspend)));
 }
 
 #endif  // V8_ENABLE_WEBASSEMBLY
 
 void DataHandler::DataHandlerVerify(Isolate* isolate) {
-  TorqueGeneratedClassVerifiers::DataHandlerVerify(*this, isolate);
+  // Don't call TorqueGeneratedClassVerifiers::DataHandlerVerify because the
+  // Torque definition of this class includes all of the optional fields.
+
+  // This assertion exists to encourage updating this verification function if
+  // new fields are added in the Torque class layout definition.
+  STATIC_ASSERT(DataHandler::kHeaderSize == 6 * kTaggedSize);
+
+  StructVerify(isolate);
+  CHECK(IsDataHandler());
+  VerifyPointer(isolate, smi_handler(isolate));
   CHECK_IMPLIES(!smi_handler().IsSmi(),
                 IsStoreHandler() && smi_handler().IsCodeT());
+  VerifyPointer(isolate, validity_cell(isolate));
+  CHECK(validity_cell().IsSmi() || validity_cell().IsCell());
   int data_count = data_field_count();
   if (data_count >= 1) {
     VerifyMaybeObjectField(isolate, kData1Offset);
@@ -1751,8 +1776,6 @@ void PreparseData::PreparseDataVerify(Isolate* isolate) {
   }
 }
 
-USE_TORQUE_VERIFIER(InterpreterData)
-
 void StackFrameInfo::StackFrameInfoVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::StackFrameInfoVerify(*this, isolate);
 #if V8_ENABLE_WEBASSEMBLY
@@ -1769,6 +1792,41 @@ void FunctionTemplateRareData::FunctionTemplateRareDataVerify(
     Isolate* isolate) {
   CHECK(c_function_overloads().IsFixedArray() ||
         c_function_overloads().IsUndefined(isolate));
+}
+
+// Helper class for verifying the string table.
+class StringTableVerifier : public RootVisitor {
+ public:
+  explicit StringTableVerifier(Isolate* isolate) : isolate_(isolate) {}
+
+  void VisitRootPointers(Root root, const char* description,
+                         FullObjectSlot start, FullObjectSlot end) override {
+    UNREACHABLE();
+  }
+  void VisitRootPointers(Root root, const char* description,
+                         OffHeapObjectSlot start,
+                         OffHeapObjectSlot end) override {
+    // Visit all HeapObject pointers in [start, end).
+    for (OffHeapObjectSlot p = start; p < end; ++p) {
+      Object o = p.load(isolate_);
+      DCHECK(!HasWeakHeapObjectTag(o));
+      if (o.IsHeapObject()) {
+        HeapObject object = HeapObject::cast(o);
+        // Check that the string is actually internalized.
+        CHECK(object.IsInternalizedString());
+      }
+    }
+  }
+
+ private:
+  Isolate* isolate_;
+};
+
+void StringTable::VerifyIfOwnedBy(Isolate* isolate) {
+  DCHECK_EQ(isolate->string_table(), this);
+  if (!isolate->OwnsStringTable()) return;
+  StringTableVerifier verifier(isolate);
+  IterateElements(&verifier);
 }
 
 #endif  // VERIFY_HEAP

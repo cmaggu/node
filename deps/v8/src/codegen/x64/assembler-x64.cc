@@ -347,6 +347,9 @@ Assembler::Assembler(const AssemblerOptions& options,
   if (CpuFeatures::IsSupported(SSE4_1)) {
     EnableCpuFeature(SSSE3);
   }
+  if (CpuFeatures::IsSupported(SSSE3)) {
+    EnableCpuFeature(SSE3);
+  }
 
 #if defined(V8_OS_WIN_X64)
   if (options.collect_win64_unwind_info) {
@@ -443,6 +446,10 @@ void Assembler::CodeTargetAlign() {
   Align(16);  // Preferred alignment of jump targets on x64.
 }
 
+void Assembler::LoopHeaderAlign() {
+  Align(64);  // Preferred alignment of loop header on x64.
+}
+
 bool Assembler::IsNop(Address addr) {
   byte* a = reinterpret_cast<byte*>(addr);
   while (*a == 0x66) a++;
@@ -536,8 +543,6 @@ bool Assembler::is_optimizable_farjmp(int idx) {
 void Assembler::GrowBuffer() {
   DCHECK(buffer_overflow());
 
-  bool previously_on_heap = buffer_->IsOnHeap();
-
   // Compute new buffer size.
   DCHECK_EQ(buffer_start_, buffer_->start());
   int old_size = buffer_->size();
@@ -573,17 +578,6 @@ void Assembler::GrowBuffer() {
   for (auto pos : internal_reference_positions_) {
     Address p = reinterpret_cast<Address>(buffer_start_ + pos);
     WriteUnalignedValue(p, ReadUnalignedValue<intptr_t>(p) + pc_delta);
-  }
-
-  // Patch on-heap references to handles.
-  if (previously_on_heap && !buffer_->IsOnHeap()) {
-    Address base = reinterpret_cast<Address>(buffer_->start());
-    for (auto p : saved_handles_for_raw_object_ptr_) {
-      WriteUnalignedValue(base + p.first, p.second);
-    }
-    for (auto p : saved_offsets_for_runtime_entries_) {
-      WriteUnalignedValue<uint32_t>(base + p.first, p.second);
-    }
   }
 
   DCHECK(!buffer_overflow());
@@ -3317,26 +3311,6 @@ void Assembler::cvtqsi2sd(XMMRegister dst, Register src) {
   emit_sse_operand(dst, src);
 }
 
-void Assembler::cvtss2sd(XMMRegister dst, XMMRegister src) {
-  DCHECK(!IsEnabled(AVX));
-  EnsureSpace ensure_space(this);
-  emit(0xF3);
-  emit_optional_rex_32(dst, src);
-  emit(0x0F);
-  emit(0x5A);
-  emit_sse_operand(dst, src);
-}
-
-void Assembler::cvtss2sd(XMMRegister dst, Operand src) {
-  DCHECK(!IsEnabled(AVX));
-  EnsureSpace ensure_space(this);
-  emit(0xF3);
-  emit_optional_rex_32(dst, src);
-  emit(0x0F);
-  emit(0x5A);
-  emit_sse_operand(dst, src);
-}
-
 void Assembler::cvtsd2si(Register dst, XMMRegister src) {
   DCHECK(!IsEnabled(AVX));
   EnsureSpace ensure_space(this);
@@ -3467,21 +3441,24 @@ void Assembler::vmovshdup(XMMRegister dst, XMMRegister src) {
   emit_sse_operand(dst, src);
 }
 
-void Assembler::vbroadcastss(XMMRegister dst, Operand src) {
-  DCHECK(IsEnabled(AVX));
-  EnsureSpace ensure_space(this);
-  emit_vex_prefix(dst, xmm0, src, kL128, k66, k0F38, kW0);
-  emit(0x18);
-  emit_sse_operand(dst, src);
-}
-
-void Assembler::vbroadcastss(XMMRegister dst, XMMRegister src) {
-  DCHECK(IsEnabled(AVX2));
-  EnsureSpace ensure_space(this);
-  emit_vex_prefix(dst, xmm0, src, kL128, k66, k0F38, kW0);
-  emit(0x18);
-  emit_sse_operand(dst, src);
-}
+#define BROADCASTSS(SIMDRegister, length)                           \
+  void Assembler::vbroadcastss(SIMDRegister dst, Operand src) {     \
+    DCHECK(IsEnabled(AVX));                                         \
+    EnsureSpace ensure_space(this);                                 \
+    emit_vex_prefix(dst, xmm0, src, k##length, k66, k0F38, kW0);    \
+    emit(0x18);                                                     \
+    emit_sse_operand(dst, src);                                     \
+  }                                                                 \
+  void Assembler::vbroadcastss(SIMDRegister dst, XMMRegister src) { \
+    DCHECK(IsEnabled(AVX2));                                        \
+    EnsureSpace ensure_space(this);                                 \
+    emit_vex_prefix(dst, xmm0, src, k##length, k66, k0F38, kW0);    \
+    emit(0x18);                                                     \
+    emit_sse_operand(dst, src);                                     \
+  }
+BROADCASTSS(XMMRegister, L128)
+BROADCASTSS(YMMRegister, L256)
+#undef BROADCASTSS
 
 void Assembler::fma_instr(byte op, XMMRegister dst, XMMRegister src1,
                           XMMRegister src2, VectorLength l, SIMDPrefix pp,
@@ -3571,6 +3548,22 @@ void Assembler::vmovdqa(XMMRegister dst, XMMRegister src) {
   emit_sse_operand(dst, src);
 }
 
+void Assembler::vmovdqa(YMMRegister dst, Operand src) {
+  DCHECK(IsEnabled(AVX));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(dst, ymm0, src, kL256, k66, k0F, kWIG);
+  emit(0x6F);
+  emit_sse_operand(dst, src);
+}
+
+void Assembler::vmovdqa(YMMRegister dst, YMMRegister src) {
+  DCHECK(IsEnabled(AVX));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(dst, ymm0, src, kL256, k66, k0F, kWIG);
+  emit(0x6F);
+  emit_sse_operand(dst, src);
+}
+
 void Assembler::vmovdqu(XMMRegister dst, Operand src) {
   DCHECK(IsEnabled(AVX));
   EnsureSpace ensure_space(this);
@@ -3595,10 +3588,34 @@ void Assembler::vmovdqu(XMMRegister dst, XMMRegister src) {
   emit_sse_operand(src, dst);
 }
 
+void Assembler::vmovdqu(YMMRegister dst, Operand src) {
+  DCHECK(IsEnabled(AVX));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(dst, ymm0, src, kL256, kF3, k0F, kWIG);
+  emit(0x6F);
+  emit_sse_operand(dst, src);
+}
+
+void Assembler::vmovdqu(Operand dst, YMMRegister src) {
+  DCHECK(IsEnabled(AVX));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(src, ymm0, dst, kL256, kF3, k0F, kWIG);
+  emit(0x7F);
+  emit_sse_operand(src, dst);
+}
+
+void Assembler::vmovdqu(YMMRegister dst, YMMRegister src) {
+  DCHECK(IsEnabled(AVX));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(src, ymm0, dst, kL256, kF3, k0F, kWIG);
+  emit(0x7F);
+  emit_sse_operand(src, dst);
+}
+
 void Assembler::vmovlps(XMMRegister dst, XMMRegister src1, Operand src2) {
   DCHECK(IsEnabled(AVX));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(dst, src1, src2, kL128, kNone, k0F, kWIG);
+  emit_vex_prefix(dst, src1, src2, kL128, kNoPrefix, k0F, kWIG);
   emit(0x12);
   emit_sse_operand(dst, src2);
 }
@@ -3606,7 +3623,7 @@ void Assembler::vmovlps(XMMRegister dst, XMMRegister src1, Operand src2) {
 void Assembler::vmovlps(Operand dst, XMMRegister src) {
   DCHECK(IsEnabled(AVX));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(src, xmm0, dst, kL128, kNone, k0F, kWIG);
+  emit_vex_prefix(src, xmm0, dst, kL128, kNoPrefix, k0F, kWIG);
   emit(0x13);
   emit_sse_operand(src, dst);
 }
@@ -3614,7 +3631,7 @@ void Assembler::vmovlps(Operand dst, XMMRegister src) {
 void Assembler::vmovhps(XMMRegister dst, XMMRegister src1, Operand src2) {
   DCHECK(IsEnabled(AVX));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(dst, src1, src2, kL128, kNone, k0F, kWIG);
+  emit_vex_prefix(dst, src1, src2, kL128, kNoPrefix, k0F, kWIG);
   emit(0x16);
   emit_sse_operand(dst, src2);
 }
@@ -3622,7 +3639,7 @@ void Assembler::vmovhps(XMMRegister dst, XMMRegister src1, Operand src2) {
 void Assembler::vmovhps(Operand dst, XMMRegister src) {
   DCHECK(IsEnabled(AVX));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(src, xmm0, dst, kL128, kNone, k0F, kWIG);
+  emit_vex_prefix(src, xmm0, dst, kL128, kNoPrefix, k0F, kWIG);
   emit(0x17);
   emit_sse_operand(src, dst);
 }
@@ -3649,11 +3666,47 @@ void Assembler::vinstr(byte op, XMMRegister dst, XMMRegister src1, Operand src2,
   emit_sse_operand(dst, src2);
 }
 
+template <typename Reg1, typename Reg2, typename Op>
+void Assembler::vinstr(byte op, Reg1 dst, Reg2 src1, Op src2, SIMDPrefix pp,
+                       LeadingOpcode m, VexW w, CpuFeature feature) {
+  DCHECK(IsEnabled(feature));
+  DCHECK(feature == AVX || feature == AVX2);
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(dst, src1, src2, kL256, pp, m, w);
+  emit(op);
+  emit_sse_operand(dst, src2);
+}
+
+template EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE) void Assembler::vinstr(
+    byte op, YMMRegister dst, YMMRegister src1, YMMRegister src2, SIMDPrefix pp,
+    LeadingOpcode m, VexW w, CpuFeature feature);
+template EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE) void Assembler::vinstr(
+    byte op, YMMRegister dst, XMMRegister src1, XMMRegister src2, SIMDPrefix pp,
+    LeadingOpcode m, VexW w, CpuFeature feature);
+template EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE) void Assembler::vinstr(
+    byte op, YMMRegister dst, YMMRegister src1, Operand src2, SIMDPrefix pp,
+    LeadingOpcode m, VexW w, CpuFeature feature);
+template EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE) void Assembler::vinstr(
+    byte op, YMMRegister dst, YMMRegister src1, XMMRegister src2, SIMDPrefix pp,
+    LeadingOpcode m, VexW w, CpuFeature feature);
+template EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE) void Assembler::vinstr(
+    byte op, YMMRegister dst, XMMRegister src1, Operand src2, SIMDPrefix pp,
+    LeadingOpcode m, VexW w, CpuFeature feature);
+
 void Assembler::vps(byte op, XMMRegister dst, XMMRegister src1,
                     XMMRegister src2) {
   DCHECK(IsEnabled(AVX));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(dst, src1, src2, kL128, kNone, k0F, kWIG);
+  emit_vex_prefix(dst, src1, src2, kL128, kNoPrefix, k0F, kWIG);
+  emit(op);
+  emit_sse_operand(dst, src2);
+}
+
+void Assembler::vps(byte op, YMMRegister dst, YMMRegister src1,
+                    YMMRegister src2) {
+  DCHECK(IsEnabled(AVX));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(dst, src1, src2, kL256, kNoPrefix, k0F, kWIG);
   emit(op);
   emit_sse_operand(dst, src2);
 }
@@ -3661,7 +3714,15 @@ void Assembler::vps(byte op, XMMRegister dst, XMMRegister src1,
 void Assembler::vps(byte op, XMMRegister dst, XMMRegister src1, Operand src2) {
   DCHECK(IsEnabled(AVX));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(dst, src1, src2, kL128, kNone, k0F, kWIG);
+  emit_vex_prefix(dst, src1, src2, kL128, kNoPrefix, k0F, kWIG);
+  emit(op);
+  emit_sse_operand(dst, src2);
+}
+
+void Assembler::vps(byte op, YMMRegister dst, YMMRegister src1, Operand src2) {
+  DCHECK(IsEnabled(AVX));
+  EnsureSpace ensure_space(this);
+  emit_vex_prefix(dst, src1, src2, kL256, kNoPrefix, k0F, kWIG);
   emit(op);
   emit_sse_operand(dst, src2);
 }
@@ -3670,7 +3731,7 @@ void Assembler::vps(byte op, XMMRegister dst, XMMRegister src1,
                     XMMRegister src2, byte imm8) {
   DCHECK(IsEnabled(AVX));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(dst, src1, src2, kL128, kNone, k0F, kWIG);
+  emit_vex_prefix(dst, src1, src2, kL128, kNoPrefix, k0F, kWIG);
   emit(op);
   emit_sse_operand(dst, src2);
   emit(imm8);
@@ -3696,7 +3757,7 @@ void Assembler::vpd(byte op, XMMRegister dst, XMMRegister src1, Operand src2) {
 void Assembler::vucomiss(XMMRegister dst, XMMRegister src) {
   DCHECK(IsEnabled(AVX));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(dst, xmm0, src, kLIG, kNone, k0F, kWIG);
+  emit_vex_prefix(dst, xmm0, src, kLIG, kNoPrefix, k0F, kWIG);
   emit(0x2E);
   emit_sse_operand(dst, src);
 }
@@ -3704,7 +3765,7 @@ void Assembler::vucomiss(XMMRegister dst, XMMRegister src) {
 void Assembler::vucomiss(XMMRegister dst, Operand src) {
   DCHECK(IsEnabled(AVX));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(dst, xmm0, src, kLIG, kNone, k0F, kWIG);
+  emit_vex_prefix(dst, xmm0, src, kLIG, kNoPrefix, k0F, kWIG);
   emit(0x2E);
   emit_sse_operand(dst, src);
 }
@@ -3738,7 +3799,7 @@ void Assembler::vss(byte op, XMMRegister dst, XMMRegister src1, Operand src2) {
 void Assembler::bmi1q(byte op, Register reg, Register vreg, Register rm) {
   DCHECK(IsEnabled(BMI1));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(reg, vreg, rm, kLZ, kNone, k0F38, kW1);
+  emit_vex_prefix(reg, vreg, rm, kLZ, kNoPrefix, k0F38, kW1);
   emit(op);
   emit_modrm(reg, rm);
 }
@@ -3746,7 +3807,7 @@ void Assembler::bmi1q(byte op, Register reg, Register vreg, Register rm) {
 void Assembler::bmi1q(byte op, Register reg, Register vreg, Operand rm) {
   DCHECK(IsEnabled(BMI1));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(reg, vreg, rm, kLZ, kNone, k0F38, kW1);
+  emit_vex_prefix(reg, vreg, rm, kLZ, kNoPrefix, k0F38, kW1);
   emit(op);
   emit_operand(reg, rm);
 }
@@ -3754,7 +3815,7 @@ void Assembler::bmi1q(byte op, Register reg, Register vreg, Operand rm) {
 void Assembler::bmi1l(byte op, Register reg, Register vreg, Register rm) {
   DCHECK(IsEnabled(BMI1));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(reg, vreg, rm, kLZ, kNone, k0F38, kW0);
+  emit_vex_prefix(reg, vreg, rm, kLZ, kNoPrefix, k0F38, kW0);
   emit(op);
   emit_modrm(reg, rm);
 }
@@ -3762,7 +3823,7 @@ void Assembler::bmi1l(byte op, Register reg, Register vreg, Register rm) {
 void Assembler::bmi1l(byte op, Register reg, Register vreg, Operand rm) {
   DCHECK(IsEnabled(BMI1));
   EnsureSpace ensure_space(this);
-  emit_vex_prefix(reg, vreg, rm, kLZ, kNone, k0F38, kW0);
+  emit_vex_prefix(reg, vreg, rm, kLZ, kNoPrefix, k0F38, kW0);
   emit(op);
   emit_operand(reg, rm);
 }
@@ -4302,7 +4363,8 @@ void Assembler::db(uint8_t data) {
 void Assembler::dd(uint32_t data, RelocInfo::Mode rmode) {
   EnsureSpace ensure_space(this);
   if (!RelocInfo::IsNone(rmode)) {
-    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode) ||
+           RelocInfo::IsLiteralConstant(rmode));
     RecordRelocInfo(rmode);
   }
   emitl(data);
@@ -4311,7 +4373,8 @@ void Assembler::dd(uint32_t data, RelocInfo::Mode rmode) {
 void Assembler::dq(uint64_t data, RelocInfo::Mode rmode) {
   EnsureSpace ensure_space(this);
   if (!RelocInfo::IsNone(rmode)) {
-    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode) ||
+           RelocInfo::IsLiteralConstant(rmode));
     RecordRelocInfo(rmode);
   }
   emitq(data);

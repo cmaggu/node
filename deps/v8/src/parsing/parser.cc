@@ -17,7 +17,7 @@
 #include "src/codegen/bailout-reason.h"
 #include "src/common/globals.h"
 #include "src/common/message-template.h"
-#include "src/compiler-dispatcher/compiler-dispatcher.h"
+#include "src/compiler-dispatcher/lazy-compile-dispatcher.h"
 #include "src/logging/counters.h"
 #include "src/logging/log.h"
 #include "src/logging/runtime-call-stats-scope.h"
@@ -516,8 +516,6 @@ void MaybeProcessSourceRanges(ParseInfo* parse_info, Expression* root,
 void Parser::ParseProgram(Isolate* isolate, Handle<Script> script,
                           ParseInfo* info,
                           MaybeHandle<ScopeInfo> maybe_outer_scope_info) {
-  // TODO(bmeurer): We temporarily need to pass allow_nesting = true here,
-  // see comment for HistogramTimerScope class.
   DCHECK_EQ(script->id(), flags().script_id());
 
   // It's OK to use the Isolate & counters here, since this function is only
@@ -3265,6 +3263,24 @@ void Parser::UpdateStatistics(Isolate* isolate, Handle<Script> script) {
   }
   isolate->counters()->total_preparse_skipped()->Increment(
       total_preparse_skipped_);
+}
+
+void Parser::UpdateStatistics(Handle<Script> script, int* use_counts,
+                              int* preparse_skipped) {
+  // Move statistics to Isolate.
+  for (int feature = 0; feature < v8::Isolate::kUseCounterFeatureCount;
+       ++feature) {
+    if (use_counts_[feature] > 0) {
+      use_counts[feature]++;
+    }
+  }
+  if (scanner_.FoundHtmlComment()) {
+    use_counts[v8::Isolate::kHtmlComment]++;
+    if (script->line_offset() == 0 && script->column_offset() == 0) {
+      use_counts[v8::Isolate::kHtmlCommentInExternalScript]++;
+    }
+  }
+  *preparse_skipped = total_preparse_skipped_;
 }
 
 void Parser::ParseOnBackground(ParseInfo* info, int start_position,

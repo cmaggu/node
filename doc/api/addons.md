@@ -1,6 +1,7 @@
 # C++ addons
 
 <!--introduced_in=v0.10.0-->
+
 <!-- type=misc -->
 
 _Addons_ are dynamically-linked shared objects written in C++. The
@@ -234,6 +235,7 @@ NODE_MODULE_INIT(/* exports, module, context */) {
 ```
 
 #### Worker support
+
 <!-- YAML
 changes:
   - version:
@@ -964,6 +966,10 @@ can be used to make it possible to force garbage collection. These flags are
 provided by the underlying V8 JavaScript engine. They are subject to change
 or removal at any time. They are not documented by Node.js or V8, and they
 should never be used outside of testing.
+
+During shutdown of the process or worker threads destructors are not called
+by the JS engine. Therefore it's the responsibility of the user to track
+these objects and ensure proper destruction to avoid resource leaks.
 
 ### Factory of wrapped objects
 

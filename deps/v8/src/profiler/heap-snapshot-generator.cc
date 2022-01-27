@@ -604,7 +604,7 @@ HeapEntry* V8HeapExplorer::AddEntry(HeapObject object) {
     return AddEntry(object, HeapEntry::kClosure, "native_bind");
   } else if (object.IsJSRegExp()) {
     JSRegExp re = JSRegExp::cast(object);
-    return AddEntry(object, HeapEntry::kRegExp, names_->GetName(re.Pattern()));
+    return AddEntry(object, HeapEntry::kRegExp, names_->GetName(re.source()));
   } else if (object.IsJSObject()) {
     const char* name = names_->GetName(
         GetConstructorName(JSObject::cast(object)));
@@ -711,18 +711,24 @@ const char* V8HeapExplorer::GetSystemEntryName(HeapObject object) {
   }
 }
 
-int V8HeapExplorer::EstimateObjectsCount() {
+uint32_t V8HeapExplorer::EstimateObjectsCount() {
   CombinedHeapObjectIterator it(heap_, HeapObjectIterator::kFilterUnreachable);
-  int objects_count = 0;
-  while (!it.Next().is_null()) ++objects_count;
+  uint32_t objects_count = 0;
+  // Avoid overflowing the objects count. In worst case, we will show the same
+  // progress for a longer period of time, but we do not expect to have that
+  // many objects.
+  while (!it.Next().is_null() &&
+         objects_count != std::numeric_limits<uint32_t>::max())
+    ++objects_count;
   return objects_count;
 }
 
-class IndexedReferencesExtractor : public ObjectVisitor {
+class IndexedReferencesExtractor : public ObjectVisitorWithCageBases {
  public:
   IndexedReferencesExtractor(V8HeapExplorer* generator, HeapObject parent_obj,
                              HeapEntry* parent)
-      : generator_(generator),
+      : ObjectVisitorWithCageBases(generator->isolate()),
+        generator_(generator),
         parent_obj_(parent_obj),
         parent_start_(parent_obj_.RawMaybeWeakField(0)),
         parent_end_(parent_obj_.RawMaybeWeakField(parent_obj_.Size())),
@@ -733,11 +739,7 @@ class IndexedReferencesExtractor : public ObjectVisitor {
     VisitPointers(host, MaybeObjectSlot(start), MaybeObjectSlot(end));
   }
   void VisitMapPointer(HeapObject object) override {
-    if (generator_->visited_fields_[0]) {
-      generator_->visited_fields_[0] = false;
-    } else {
-      VisitHeapObjectImpl(object.map(), 0);
-    }
+    VisitSlotImpl(cage_base(), object.map_slot());
   }
   void VisitPointers(HeapObject host, MaybeObjectSlot start,
                      MaybeObjectSlot end) override {
@@ -745,17 +747,14 @@ class IndexedReferencesExtractor : public ObjectVisitor {
     // all the slots must point inside the object.
     CHECK_LE(parent_start_, start);
     CHECK_LE(end, parent_end_);
-    for (MaybeObjectSlot p = start; p < end; ++p) {
-      int field_index = static_cast<int>(p - parent_start_);
-      if (generator_->visited_fields_[field_index]) {
-        generator_->visited_fields_[field_index] = false;
-        continue;
-      }
-      HeapObject heap_object;
-      if ((*p)->GetHeapObject(&heap_object)) {
-        VisitHeapObjectImpl(heap_object, field_index);
-      }
+    for (MaybeObjectSlot slot = start; slot < end; ++slot) {
+      VisitSlotImpl(cage_base(), slot);
     }
+  }
+
+  void VisitCodePointer(HeapObject host, CodeObjectSlot slot) override {
+    CHECK(V8_EXTERNAL_CODE_SPACE_BOOL);
+    VisitSlotImpl(code_cage_base(), slot);
   }
 
   void VisitCodeTarget(Code host, RelocInfo* rinfo) override {
@@ -764,10 +763,32 @@ class IndexedReferencesExtractor : public ObjectVisitor {
   }
 
   void VisitEmbeddedPointer(Code host, RelocInfo* rinfo) override {
-    VisitHeapObjectImpl(rinfo->target_object(), -1);
+    HeapObject object = rinfo->target_object(cage_base());
+    if (host.IsWeakObject(object)) {
+      generator_->SetWeakReference(parent_, next_index_++, object, {});
+    } else {
+      VisitHeapObjectImpl(object, -1);
+    }
   }
 
  private:
+  template <typename TSlot>
+  V8_INLINE void VisitSlotImpl(PtrComprCageBase cage_base, TSlot slot) {
+    int field_index =
+        static_cast<int>(MaybeObjectSlot(slot.address()) - parent_start_);
+    if (generator_->visited_fields_[field_index]) {
+      generator_->visited_fields_[field_index] = false;
+    } else {
+      HeapObject heap_object;
+      auto loaded_value = slot.load(cage_base);
+      if (loaded_value.GetHeapObjectIfStrong(&heap_object)) {
+        VisitHeapObjectImpl(heap_object, field_index);
+      } else if (loaded_value.GetHeapObjectIfWeak(&heap_object)) {
+        generator_->SetWeakReference(parent_, next_index_++, heap_object, {});
+      }
+    }
+  }
+
   V8_INLINE void VisitHeapObjectImpl(HeapObject heap_object, int field_index) {
     DCHECK_LE(-1, field_index);
     // The last parameter {field_offset} is only used to check some well-known
@@ -1022,7 +1043,7 @@ void V8HeapExplorer::ExtractContextReferences(HeapEntry* entry,
       SetContextReference(entry, local_name, context.get(idx),
                           Context::OffsetOfElementAt(idx));
     }
-    if (scope_info.HasFunctionName()) {
+    if (scope_info.HasContextAllocatedFunctionName()) {
       String name = String::cast(scope_info.FunctionName());
       int idx = scope_info.FunctionContextSlotIndex(name);
       if (idx >= 0) {
@@ -1203,15 +1224,21 @@ void V8HeapExplorer::ExtractCodeReferences(HeapEntry* entry, Code code) {
   TagObject(code.relocation_info(), "(code relocation info)");
   SetInternalReference(entry, "relocation_info", code.relocation_info(),
                        Code::kRelocationInfoOffset);
-  TagObject(code.deoptimization_data(), "(code deopt data)");
-  SetInternalReference(entry, "deoptimization_data", code.deoptimization_data(),
-                       Code::kDeoptimizationDataOffset);
+
   if (code.kind() == CodeKind::BASELINE) {
+    TagObject(code.bytecode_or_interpreter_data(), "(interpreter data)");
+    SetInternalReference(entry, "interpreter_data",
+                         code.bytecode_or_interpreter_data(),
+                         Code::kDeoptimizationDataOrInterpreterDataOffset);
     TagObject(code.bytecode_offset_table(), "(bytecode offset table)");
     SetInternalReference(entry, "bytecode_offset_table",
                          code.bytecode_offset_table(),
                          Code::kPositionTableOffset);
   } else {
+    TagObject(code.deoptimization_data(), "(code deopt data)");
+    SetInternalReference(entry, "deoptimization_data",
+                         code.deoptimization_data(),
+                         Code::kDeoptimizationDataOrInterpreterDataOffset);
     TagObject(code.source_position_table(), "(source position table)");
     SetInternalReference(entry, "source_position_table",
                          code.source_position_table(),
@@ -1395,7 +1422,7 @@ void V8HeapExplorer::ExtractPropertyReferences(JSObject js_obj,
     for (InternalIndex i : js_obj.map().IterateOwnDescriptors()) {
       PropertyDetails details = descs.GetDetails(i);
       switch (details.location()) {
-        case kField: {
+        case PropertyLocation::kField: {
           if (!snapshot_->capture_numeric_value()) {
             Representation r = details.representation();
             if (r.IsSmi() || r.IsDouble()) break;
@@ -1411,7 +1438,7 @@ void V8HeapExplorer::ExtractPropertyReferences(JSObject js_obj,
                                              nullptr, field_offset);
           break;
         }
-        case kDescriptor:
+        case PropertyLocation::kDescriptor:
           SetDataOrAccessorPropertyReference(
               details.kind(), entry, descs.GetKey(i), descs.GetStrongValue(i));
           break;
@@ -1644,8 +1671,9 @@ bool V8HeapExplorer::IterateAndExtractReferences(
 }
 
 bool V8HeapExplorer::IsEssentialObject(Object object) {
-  ReadOnlyRoots roots(heap_);
-  return object.IsHeapObject() && !object.IsOddball() &&
+  Isolate* isolate = heap_->isolate();
+  ReadOnlyRoots roots(isolate);
+  return object.IsHeapObject() && !object.IsOddball(isolate) &&
          object != roots.empty_byte_array() &&
          object != roots.empty_fixed_array() &&
          object != roots.empty_weak_fixed_array() &&
@@ -1761,7 +1789,8 @@ void V8HeapExplorer::SetWeakReference(HeapEntry* parent_entry,
 }
 
 void V8HeapExplorer::SetWeakReference(HeapEntry* parent_entry, int index,
-                                      Object child_obj, int field_offset) {
+                                      Object child_obj,
+                                      base::Optional<int> field_offset) {
   if (!IsEssentialObject(child_obj)) {
     return;
   }
@@ -1769,7 +1798,9 @@ void V8HeapExplorer::SetWeakReference(HeapEntry* parent_entry, int index,
   DCHECK_NOT_NULL(child_entry);
   parent_entry->SetNamedReference(
       HeapGraphEdge::kWeak, names_->GetFormatted("%d", index), child_entry);
-  MarkVisitedField(field_offset);
+  if (field_offset.has_value()) {
+    MarkVisitedField(*field_offset);
+  }
 }
 
 void V8HeapExplorer::SetDataOrAccessorPropertyReference(
@@ -2234,7 +2265,17 @@ bool HeapSnapshotGenerator::GenerateSnapshot() {
 }
 
 void HeapSnapshotGenerator::ProgressStep() {
-  ++progress_counter_;
+  // Only increment the progress_counter_ until
+  // equal to progress_total -1 == progress_counter.
+  // This ensures that intermediate ProgressReport calls will never signal
+  // that the work is finished (i.e. progress_counter_ == progress_total_).
+  // Only the forced ProgressReport() at the end of GenerateSnapshot() should,
+  // after setting progress_counter_ = progress_total_, signal that the
+  // work is finished because signalling finished twice
+  // breaks the DevTools frontend.
+  if (control_ != nullptr && progress_total_ > progress_counter_ + 1) {
+    ++progress_counter_;
+  }
 }
 
 bool HeapSnapshotGenerator::ProgressReport(bool force) {
@@ -2249,12 +2290,7 @@ bool HeapSnapshotGenerator::ProgressReport(bool force) {
 
 void HeapSnapshotGenerator::InitProgressCounter() {
   if (control_ == nullptr) return;
-  // The +1 ensures that intermediate ProgressReport calls will never signal
-  // that the work is finished (i.e. progress_counter_ == progress_total_).
-  // Only the forced ProgressReport() at the end of GenerateSnapshot()
-  // should signal that the work is finished because signalling finished twice
-  // breaks the DevTools frontend.
-  progress_total_ = v8_heap_explorer_.EstimateObjectsCount() + 1;
+  progress_total_ = v8_heap_explorer_.EstimateObjectsCount();
   progress_counter_ = 0;
 }
 

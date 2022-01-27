@@ -2,8 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "include/v8-function.h"
+#include "include/v8-isolate.h"
+#include "include/v8-local-handle.h"
 #include "include/v8-unwinder-state.h"
-#include "include/v8.h"
 #include "src/api/api-inl.h"
 #include "src/builtins/builtins.h"
 #include "src/execution/isolate.h"
@@ -454,7 +456,7 @@ TEST(Unwind_JSEntry_Fail_CodePagesAPI) {
   CHECK_LE(pages_length, arraysize(code_pages));
   RegisterState register_state;
 
-  Code js_entry = i_isolate->heap()->builtin(Builtin::kJSEntry);
+  Code js_entry = i_isolate->builtins()->code(Builtin::kJSEntry);
   byte* start = reinterpret_cast<byte*>(js_entry.InstructionStart());
   register_state.pc = start + 10;
 
@@ -636,7 +638,7 @@ TEST(PCIsInV8_InJSEntryRange_CodePagesAPI) {
       isolate->CopyCodePages(arraysize(code_pages), code_pages);
   CHECK_LE(pages_length, arraysize(code_pages));
 
-  Code js_entry = i_isolate->heap()->builtin(Builtin::kJSEntry);
+  Code js_entry = i_isolate->builtins()->code(Builtin::kJSEntry);
   byte* start = reinterpret_cast<byte*>(js_entry.InstructionStart());
   size_t length = js_entry.InstructionSize();
 

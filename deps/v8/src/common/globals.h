@@ -14,6 +14,7 @@
 #include "include/v8-internal.h"
 #include "src/base/atomic-utils.h"
 #include "src/base/build_config.h"
+#include "src/base/enum-set.h"
 #include "src/base/flags.h"
 #include "src/base/logging.h"
 #include "src/base/macros.h"
@@ -32,6 +33,7 @@ namespace internal {
 constexpr int KB = 1024;
 constexpr int MB = KB * 1024;
 constexpr int GB = MB * 1024;
+constexpr int64_t TB = static_cast<int64_t>(GB) * 1024;
 
 // Determine whether we are running in a simulated environment.
 // Setting USE_SIMULATOR explicitly from the build script will force
@@ -59,6 +61,9 @@ constexpr int GB = MB * 1024;
 #define USE_SIMULATOR 1
 #endif
 #if (V8_TARGET_ARCH_RISCV64 && !V8_HOST_ARCH_RISCV64)
+#define USE_SIMULATOR 1
+#endif
+#if (V8_TARGET_ARCH_LOONG64 && !V8_HOST_ARCH_LOONG64)
 #define USE_SIMULATOR 1
 #endif
 #endif
@@ -99,18 +104,21 @@ STATIC_ASSERT(V8_DEFAULT_STACK_SIZE_KB* KB +
                   kStackLimitSlackForDeoptimizationInBytes <=
               MB);
 
-// Determine whether the short builtin calls optimization is enabled.
-#ifdef V8_SHORT_BUILTIN_CALLS
-#ifndef V8_COMPRESS_POINTERS
-// TODO(11527): Fix this by passing Isolate* to Code::OffHeapInstructionStart()
-// and friends.
-#error Short builtin calls feature requires pointer compression
-#endif
+#if defined(V8_SHORT_BUILTIN_CALLS) && \
+    (!defined(V8_COMPRESS_POINTERS) || defined(V8_EXTERNAL_CODE_SPACE))
+#define V8_ENABLE_NEAR_CODE_RANGE_BOOL true
+#else
+#define V8_ENABLE_NEAR_CODE_RANGE_BOOL false
 #endif
 
 // This constant is used for detecting whether the machine has >= 4GB of
 // physical memory by checking the max old space size.
 const size_t kShortBuiltinCallsOldSpaceSizeThreshold = size_t{2} * GB;
+
+// This constant is used for detecting whether code range could be
+// allocated within the +/- 2GB boundary to builtins' embedded blob
+// to use short builtin calls.
+const size_t kShortBuiltinCallsBoundary = size_t{2} * GB;
 
 // Determine whether dict mode prototypes feature is enabled.
 #ifdef V8_ENABLE_SWISS_NAME_DICTIONARY
@@ -586,9 +594,14 @@ constexpr intptr_t kPointerAlignmentMask = kPointerAlignment - 1;
 constexpr intptr_t kDoubleAlignment = 8;
 constexpr intptr_t kDoubleAlignmentMask = kDoubleAlignment - 1;
 
-// Desired alignment for generated code is 32 bytes (to improve cache line
-// utilization).
+// Desired alignment for generated code is 64 bytes on x64 (to allow 64-bytes
+// loop header alignment) and 32 bytes (to improve cache line utilization) on
+// other architectures.
+#if V8_TARGET_ARCH_X64
+constexpr int kCodeAlignmentBits = 6;
+#else
 constexpr int kCodeAlignmentBits = 5;
+#endif
 constexpr intptr_t kCodeAlignment = 1 << kCodeAlignmentBits;
 constexpr intptr_t kCodeAlignmentMask = kCodeAlignment - 1;
 
@@ -750,11 +763,13 @@ struct SlotTraits {
   using TMaybeObjectSlot = CompressedMaybeObjectSlot;
   using THeapObjectSlot = CompressedHeapObjectSlot;
   using TOffHeapObjectSlot = OffHeapCompressedObjectSlot;
+  using TCodeObjectSlot = OffHeapCompressedObjectSlot;
 #else
   using TObjectSlot = FullObjectSlot;
   using TMaybeObjectSlot = FullMaybeObjectSlot;
   using THeapObjectSlot = FullHeapObjectSlot;
   using TOffHeapObjectSlot = OffHeapFullObjectSlot;
+  using TCodeObjectSlot = OffHeapFullObjectSlot;
 #endif
 };
 
@@ -775,6 +790,12 @@ using HeapObjectSlot = SlotTraits::THeapObjectSlot;
 // holding an Object value (smi or strong heap object), whose slot location is
 // off-heap.
 using OffHeapObjectSlot = SlotTraits::TOffHeapObjectSlot;
+
+// A CodeObjectSlot instance describes a kTaggedSize-sized field ("slot")
+// holding a strong pointer to a Code object. The Code object slots might be
+// compressed and since code space might be allocated off the main heap
+// the load operations require explicit cage base value for code space.
+using CodeObjectSlot = SlotTraits::TCodeObjectSlot;
 
 using WeakSlotCallback = bool (*)(FullObjectSlot pointer);
 
@@ -812,9 +833,8 @@ enum class AllocationType : uint8_t {
   kCode,       // Code object allocated in CODE_SPACE or CODE_LO_SPACE
   kMap,        // Map object allocated in MAP_SPACE
   kReadOnly,   // Object allocated in RO_SPACE
-  kSharedOld,  // Regular object allocated in SHARED_OLD_SPACE or
-               // SHARED_LO_SPACE
-  kSharedMap,  // Map object in SHARED_MAP_SPACE
+  kSharedOld,  // Regular object allocated in OLD_SPACE in the shared heap
+  kSharedMap,  // Map object in MAP_SPACE in the shared heap
 };
 
 inline size_t hash_value(AllocationType kind) {
@@ -858,7 +878,7 @@ enum MinimumCapacity {
   USE_CUSTOM_MINIMUM_CAPACITY
 };
 
-enum GarbageCollector { SCAVENGER, MARK_COMPACTOR, MINOR_MARK_COMPACTOR };
+enum class GarbageCollector { SCAVENGER, MARK_COMPACTOR, MINOR_MARK_COMPACTOR };
 
 enum class CompactionSpaceKind {
   kNone,
@@ -869,11 +889,27 @@ enum class CompactionSpaceKind {
 
 enum Executability { NOT_EXECUTABLE, EXECUTABLE };
 
-enum class BytecodeFlushMode {
-  kDoNotFlushBytecode,
+enum class CodeFlushMode {
   kFlushBytecode,
-  kStressFlushBytecode,
+  kFlushBaselineCode,
+  kStressFlushCode,
 };
+
+bool inline IsBaselineCodeFlushingEnabled(base::EnumSet<CodeFlushMode> mode) {
+  return mode.contains(CodeFlushMode::kFlushBaselineCode);
+}
+
+bool inline IsByteCodeFlushingEnabled(base::EnumSet<CodeFlushMode> mode) {
+  return mode.contains(CodeFlushMode::kFlushBytecode);
+}
+
+bool inline IsStressFlushingEnabled(base::EnumSet<CodeFlushMode> mode) {
+  return mode.contains(CodeFlushMode::kStressFlushCode);
+}
+
+bool inline IsFlushingDisabled(base::EnumSet<CodeFlushMode> mode) {
+  return mode.empty();
+}
 
 // Indicates whether a script should be parsed and compiled in REPL mode.
 enum class REPLMode {
@@ -884,6 +920,12 @@ enum class REPLMode {
 inline REPLMode construct_repl_mode(bool is_repl_mode) {
   return is_repl_mode ? REPLMode::kYes : REPLMode::kNo;
 }
+
+// Indicates whether a script is parsed during debugging.
+enum class ParsingWhileDebugging {
+  kYes,
+  kNo,
+};
 
 // Flag indicating whether code is built into the VM (one of the natives files).
 enum NativesFlag { NOT_NATIVES_CODE, EXTENSION_CODE, INSPECTOR_CODE };
@@ -1674,20 +1716,6 @@ enum IsolateAddressId {
       kIsolateAddressCount
 };
 
-enum class PoisoningMitigationLevel {
-  kPoisonAll,
-  kDontPoison,
-  kPoisonCriticalOnly
-};
-
-enum class LoadSensitivity {
-  kCritical,  // Critical loads are poisoned whenever we can run untrusted
-              // code (i.e., when --untrusted-code-mitigations is on).
-  kUnsafe,    // Unsafe loads are poisoned when full poisoning is on
-              // (--branch-load-poisoning).
-  kSafe       // Safe loads are never poisoned.
-};
-
 // The reason for a WebAssembly trap.
 #define FOREACH_WASM_TRAPREASON(V) \
   V(TrapUnreachable)               \
@@ -1758,7 +1786,20 @@ constexpr int kSwissNameDictionaryInitialCapacity = 4;
 constexpr int kSmallOrderedHashSetMinCapacity = 4;
 constexpr int kSmallOrderedHashMapMinCapacity = 4;
 
-static const uint16_t kDontAdaptArgumentsSentinel = static_cast<uint16_t>(-1);
+#ifdef V8_INCLUDE_RECEIVER_IN_ARGC
+constexpr bool kJSArgcIncludesReceiver = true;
+constexpr int kJSArgcReceiverSlots = 1;
+constexpr uint16_t kDontAdaptArgumentsSentinel = 0;
+#else
+constexpr bool kJSArgcIncludesReceiver = false;
+constexpr int kJSArgcReceiverSlots = 0;
+constexpr uint16_t kDontAdaptArgumentsSentinel = static_cast<uint16_t>(-1);
+#endif
+
+// Helper to get the parameter count for functions with JS linkage.
+inline constexpr int JSParameterCount(int param_count_without_receiver) {
+  return param_count_without_receiver + kJSArgcReceiverSlots;
+}
 
 // Opaque data type for identifying stack frames. Used extensively
 // by the debugger.
@@ -1837,6 +1878,15 @@ enum PropertiesEnumerationMode {
   kEnumerationOrder,
   // Order of property addition
   kPropertyAdditionOrder,
+};
+
+enum class StringInternalizationStrategy {
+  // The string must be internalized by first copying.
+  kCopy,
+  // The string can be internalized in-place by changing its map.
+  kInPlace,
+  // The string is already internalized.
+  kAlreadyInternalized
 };
 
 }  // namespace internal

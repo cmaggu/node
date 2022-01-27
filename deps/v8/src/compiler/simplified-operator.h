@@ -46,10 +46,6 @@ size_t hash_value(BaseTaggedness);
 
 std::ostream& operator<<(std::ostream&, BaseTaggedness);
 
-size_t hash_value(LoadSensitivity);
-
-std::ostream& operator<<(std::ostream&, LoadSensitivity);
-
 struct ConstFieldInfo {
   // the map that introduced the const field, if any. An access is considered
   // mutable iff the handle is null.
@@ -82,7 +78,6 @@ struct FieldAccess {
   Type type;                      // type of the field.
   MachineType machine_type;       // machine type of the field.
   WriteBarrierKind write_barrier_kind;  // write barrier hint.
-  LoadSensitivity load_sensitivity;     // load safety for poisoning.
   ConstFieldInfo const_field_info;      // the constness of this access, and the
                                     // field owner map, if the access is const
   bool is_store_in_literal;  // originates from a kStoreInLiteral access
@@ -96,14 +91,12 @@ struct FieldAccess {
         type(Type::None()),
         machine_type(MachineType::None()),
         write_barrier_kind(kFullWriteBarrier),
-        load_sensitivity(LoadSensitivity::kUnsafe),
         const_field_info(ConstFieldInfo::None()),
         is_store_in_literal(false) {}
 
   FieldAccess(BaseTaggedness base_is_tagged, int offset, MaybeHandle<Name> name,
               MaybeHandle<Map> map, Type type, MachineType machine_type,
               WriteBarrierKind write_barrier_kind,
-              LoadSensitivity load_sensitivity = LoadSensitivity::kUnsafe,
               ConstFieldInfo const_field_info = ConstFieldInfo::None(),
               bool is_store_in_literal = false
 #ifdef V8_HEAP_SANDBOX
@@ -118,7 +111,6 @@ struct FieldAccess {
         type(type),
         machine_type(machine_type),
         write_barrier_kind(write_barrier_kind),
-        load_sensitivity(load_sensitivity),
         const_field_info(const_field_info),
         is_store_in_literal(is_store_in_literal)
 #ifdef V8_HEAP_SANDBOX
@@ -162,25 +154,21 @@ struct ElementAccess {
   Type type;                      // type of the element.
   MachineType machine_type;       // machine type of the element.
   WriteBarrierKind write_barrier_kind;  // write barrier hint.
-  LoadSensitivity load_sensitivity;     // load safety for poisoning.
 
   ElementAccess()
       : base_is_tagged(kTaggedBase),
         header_size(0),
         type(Type::None()),
         machine_type(MachineType::None()),
-        write_barrier_kind(kFullWriteBarrier),
-        load_sensitivity(LoadSensitivity::kUnsafe) {}
+        write_barrier_kind(kFullWriteBarrier) {}
 
   ElementAccess(BaseTaggedness base_is_tagged, int header_size, Type type,
-                MachineType machine_type, WriteBarrierKind write_barrier_kind,
-                LoadSensitivity load_sensitivity = LoadSensitivity::kUnsafe)
+                MachineType machine_type, WriteBarrierKind write_barrier_kind)
       : base_is_tagged(base_is_tagged),
         header_size(header_size),
         type(type),
         machine_type(machine_type),
-        write_barrier_kind(write_barrier_kind),
-        load_sensitivity(load_sensitivity) {}
+        write_barrier_kind(write_barrier_kind) {}
 
   int tag() const { return base_is_tagged == kTaggedBase ? kHeapObjectTag : 0; }
 };
@@ -606,9 +594,9 @@ bool operator==(NumberOperationParameters const&,
 const NumberOperationParameters& NumberOperationParametersOf(const Operator* op)
     V8_WARN_UNUSED_RESULT;
 
-class SpeculativeBigIntAsUintNParameters {
+class SpeculativeBigIntAsNParameters {
  public:
-  SpeculativeBigIntAsUintNParameters(int bits, const FeedbackSource& feedback)
+  SpeculativeBigIntAsNParameters(int bits, const FeedbackSource& feedback)
       : bits_(bits), feedback_(feedback) {
     DCHECK_GE(bits_, 0);
     DCHECK_LE(bits_, 64);
@@ -622,12 +610,12 @@ class SpeculativeBigIntAsUintNParameters {
   FeedbackSource feedback_;
 };
 
-size_t hash_value(SpeculativeBigIntAsUintNParameters const&);
+size_t hash_value(SpeculativeBigIntAsNParameters const&);
 V8_EXPORT_PRIVATE std::ostream& operator<<(
-    std::ostream&, const SpeculativeBigIntAsUintNParameters&);
-bool operator==(SpeculativeBigIntAsUintNParameters const&,
-                SpeculativeBigIntAsUintNParameters const&);
-const SpeculativeBigIntAsUintNParameters& SpeculativeBigIntAsUintNParametersOf(
+    std::ostream&, const SpeculativeBigIntAsNParameters&);
+bool operator==(SpeculativeBigIntAsNParameters const&,
+                SpeculativeBigIntAsNParameters const&);
+const SpeculativeBigIntAsNParameters& SpeculativeBigIntAsNParametersOf(
     const Operator* op) V8_WARN_UNUSED_RESULT;
 
 int FormalParameterCountOf(const Operator* op) V8_WARN_UNUSED_RESULT;
@@ -852,6 +840,8 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* SpeculativeBigIntAdd(BigIntOperationHint hint);
   const Operator* SpeculativeBigIntSubtract(BigIntOperationHint hint);
   const Operator* SpeculativeBigIntNegate(BigIntOperationHint hint);
+  const Operator* SpeculativeBigIntAsIntN(int bits,
+                                          const FeedbackSource& feedback);
   const Operator* SpeculativeBigIntAsUintN(int bits,
                                            const FeedbackSource& feedback);
 
@@ -919,14 +909,14 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorBuilder final
   const Operator* ChangeFloat64ToTaggedPointer();
   const Operator* ChangeTaggedToBit();
   const Operator* ChangeBitToTagged();
-  const Operator* TruncateBigIntToUint64();
+  const Operator* TruncateBigIntToWord64();
+  const Operator* ChangeInt64ToBigInt();
   const Operator* ChangeUint64ToBigInt();
   const Operator* TruncateTaggedToWord32();
   const Operator* TruncateTaggedToFloat64();
   const Operator* TruncateTaggedToBit();
   const Operator* TruncateTaggedPointerToBit();
 
-  const Operator* PoisonIndex();
   const Operator* CompareMaps(ZoneHandleSet<Map>);
   const Operator* MapGuard(ZoneHandleSet<Map> maps);
 

@@ -41,13 +41,20 @@ RUNTIME_FUNCTION(Runtime_ThrowConstructorNonCallableError) {
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, constructor, 0);
   Handle<String> name(constructor->shared().Name(), isolate);
+
+  Handle<Context> context = handle(constructor->native_context(), isolate);
+  DCHECK(context->IsNativeContext());
+  Handle<JSFunction> realm_type_error_function(
+      JSFunction::cast(context->get(Context::TYPE_ERROR_FUNCTION_INDEX)),
+      isolate);
   if (name->length() == 0) {
     THROW_NEW_ERROR_RETURN_FAILURE(
-        isolate,
-        NewTypeError(MessageTemplate::kAnonymousConstructorNonCallable));
+        isolate, NewError(realm_type_error_function,
+                          MessageTemplate::kAnonymousConstructorNonCallable));
   }
   THROW_NEW_ERROR_RETURN_FAILURE(
-      isolate, NewTypeError(MessageTemplate::kConstructorNonCallable, name));
+      isolate, NewError(realm_type_error_function,
+                        MessageTemplate::kConstructorNonCallable, name));
 }
 
 
@@ -291,7 +298,8 @@ bool AddDescriptorsByTemplate(
   int count = 0;
   for (InternalIndex i : InternalIndex::Range(nof_descriptors)) {
     PropertyDetails details = descriptors_template->GetDetails(i);
-    if (details.location() == kDescriptor && details.kind() == kData) {
+    if (details.location() == PropertyLocation::kDescriptor &&
+        details.kind() == kData) {
       count++;
     }
   }
@@ -312,7 +320,7 @@ bool AddDescriptorsByTemplate(
     Name name = descriptors_template->GetKey(i);
     DCHECK(name.IsUniqueName());
     PropertyDetails details = descriptors_template->GetDetails(i);
-    if (details.location() == kDescriptor) {
+    if (details.location() == PropertyLocation::kDescriptor) {
       if (details.kind() == kData) {
         if (value.IsSmi()) {
           value = GetMethodWithSharedName(isolate, args, value);
@@ -337,11 +345,13 @@ bool AddDescriptorsByTemplate(
       UNREACHABLE();
     }
     DCHECK(value.FitsRepresentation(details.representation()));
-    if (details.location() == kDescriptor && details.kind() == kData) {
-      details = PropertyDetails(details.kind(), details.attributes(), kField,
-                                PropertyConstness::kConst,
-                                details.representation(), field_index)
-                    .set_pointer(details.pointer());
+    if (details.location() == PropertyLocation::kDescriptor &&
+        details.kind() == kData) {
+      details =
+          PropertyDetails(details.kind(), details.attributes(),
+                          PropertyLocation::kField, PropertyConstness::kConst,
+                          details.representation(), field_index)
+              .set_pointer(details.pointer());
 
       property_array->set(field_index, value);
       field_index++;
@@ -619,7 +629,12 @@ MaybeHandle<Object> DefineClass(Isolate* isolate,
 
   Handle<JSObject> prototype = CreateClassPrototype(isolate);
   DCHECK_EQ(*constructor, args[ClassBoilerplate::kConstructorArgumentIndex]);
-  args.set_at(ClassBoilerplate::kPrototypeArgumentIndex, *prototype);
+  // Temporarily change ClassBoilerplate::kPrototypeArgumentIndex for the
+  // subsequent calls, but use a scope to make sure to change it back before
+  // returning, to not corrupt the caller's argument frame (in particular, for
+  // the interpreter, to not clobber the register frame).
+  RuntimeArguments::ChangeValueScope set_prototype_value_scope(
+      isolate, &args, ClassBoilerplate::kPrototypeArgumentIndex, *prototype);
 
   if (!InitClassConstructor(isolate, class_boilerplate, constructor_parent,
                             constructor, args) ||

@@ -167,7 +167,8 @@ Handle<Map> LookupIterator::GetReceiverMap() const {
 }
 
 bool LookupIterator::HasAccess() const {
-  DCHECK_EQ(ACCESS_CHECK, state_);
+  // TRANSITION is true when being called from StoreOwnIC.
+  DCHECK(state_ == ACCESS_CHECK || state_ == TRANSITION);
   return isolate_->MayAccess(handle(isolate_->context(), isolate_),
                              GetHolder<JSObject>());
 }
@@ -889,7 +890,7 @@ Handle<Object> LookupIterator::FetchValue(
       result = holder_->property_dictionary(isolate_).ValueAt(
           isolate_, dictionary_entry());
     }
-  } else if (property_details_.location() == kField) {
+  } else if (property_details_.location() == PropertyLocation::kField) {
     DCHECK_EQ(kData, property_details_.kind());
 #if V8_ENABLE_WEBASSEMBLY
     if (V8_UNLIKELY(holder_->IsWasmObject(isolate_))) {
@@ -932,7 +933,7 @@ Handle<Object> LookupIterator::FetchValue(
 bool LookupIterator::IsConstFieldValueEqualTo(Object value) const {
   DCHECK(!IsElement(*holder_));
   DCHECK(holder_->HasFastProperties(isolate_));
-  DCHECK_EQ(kField, property_details_.location());
+  DCHECK_EQ(PropertyLocation::kField, property_details_.location());
   DCHECK_EQ(PropertyConstness::kConst, property_details_.constness());
   if (value.IsUninitialized(isolate())) {
     // Storing uninitialized value means that we are preparing for a computed
@@ -1004,7 +1005,7 @@ bool LookupIterator::IsConstDictValueEqualTo(Object value) const {
 int LookupIterator::GetFieldDescriptorIndex() const {
   DCHECK(has_property_);
   DCHECK(holder_->HasFastProperties());
-  DCHECK_EQ(kField, property_details_.location());
+  DCHECK_EQ(PropertyLocation::kField, property_details_.location());
   DCHECK_EQ(kData, property_details_.kind());
   // TODO(jkummerow): Propagate InternalIndex further.
   return descriptor_number().as_int();
@@ -1013,7 +1014,7 @@ int LookupIterator::GetFieldDescriptorIndex() const {
 int LookupIterator::GetAccessorIndex() const {
   DCHECK(has_property_);
   DCHECK(holder_->HasFastProperties(isolate_));
-  DCHECK_EQ(kDescriptor, property_details_.location());
+  DCHECK_EQ(PropertyLocation::kDescriptor, property_details_.location());
   DCHECK_EQ(kAccessor, property_details_.kind());
   return descriptor_number().as_int();
 }
@@ -1021,7 +1022,7 @@ int LookupIterator::GetAccessorIndex() const {
 FieldIndex LookupIterator::GetFieldIndex() const {
   DCHECK(has_property_);
   DCHECK(holder_->HasFastProperties(isolate_));
-  DCHECK_EQ(kField, property_details_.location());
+  DCHECK_EQ(PropertyLocation::kField, property_details_.location());
   DCHECK(!IsElement(*holder_));
   return FieldIndex::ForDescriptor(holder_->map(isolate_), descriptor_number());
 }
@@ -1062,7 +1063,7 @@ void LookupIterator::WriteDataValue(Handle<Object> value,
     accessor->Set(object, number_, *value);
   } else if (holder->HasFastProperties(isolate_)) {
     DCHECK(holder->IsJSObject(isolate_));
-    if (property_details_.location() == kField) {
+    if (property_details_.location() == PropertyLocation::kField) {
       // Check that in case of VariableMode::kConst field the existing value is
       // equal to |value|.
       DCHECK_IMPLIES(!initializing_store && property_details_.constness() ==
@@ -1071,7 +1072,7 @@ void LookupIterator::WriteDataValue(Handle<Object> value,
       JSObject::cast(*holder).WriteToField(descriptor_number(),
                                            property_details_, *value);
     } else {
-      DCHECK_EQ(kDescriptor, property_details_.location());
+      DCHECK_EQ(PropertyLocation::kDescriptor, property_details_.location());
       DCHECK_EQ(PropertyConstness::kConst, property_details_.constness());
     }
   } else if (holder->IsJSGlobalObject(isolate_)) {
@@ -1473,34 +1474,9 @@ ConcurrentLookupIterator::TryGetOwnConstantElement(
 
     JSPrimitiveWrapper js_value = JSPrimitiveWrapper::cast(holder);
     String wrapped_string = String::cast(js_value.value());
-
-    // The access guard below protects string accesses related to internalized
-    // strings.
-    // TODO(jgruber): Support other string kinds.
-    Map wrapped_string_map = wrapped_string.map(isolate, kAcquireLoad);
-    InstanceType wrapped_type = wrapped_string_map.instance_type();
-    if (!(InstanceTypeChecker::IsInternalizedString(wrapped_type)) ||
-        InstanceTypeChecker::IsThinString(wrapped_type)) {
-      return kGaveUp;
-    }
-
-    const uint32_t length = static_cast<uint32_t>(wrapped_string.length());
-    if (index >= length) return kGaveUp;
-
-    uint16_t charcode;
-    {
-      SharedStringAccessGuardIfNeeded access_guard(local_isolate);
-      charcode = wrapped_string.Get(static_cast<int>(index));
-    }
-
-    if (charcode > unibrow::Latin1::kMaxChar) return kGaveUp;
-
-    Object value = isolate->factory()->single_character_string_cache()->get(
-        charcode, kRelaxedLoad);
-    if (value == ReadOnlyRoots(isolate).undefined_value()) return kGaveUp;
-
-    *result_out = value;
-    return kPresent;
+    return ConcurrentLookupIterator::TryGetOwnChar(
+        static_cast<String*>(result_out), isolate, local_isolate,
+        wrapped_string, index);
   } else {
     DCHECK(!IsFrozenElementsKind(elements_kind));
     DCHECK(!IsDictionaryElementsKind(elements_kind));
@@ -1512,14 +1488,49 @@ ConcurrentLookupIterator::TryGetOwnConstantElement(
 }
 
 // static
+ConcurrentLookupIterator::Result ConcurrentLookupIterator::TryGetOwnChar(
+    String* result_out, Isolate* isolate, LocalIsolate* local_isolate,
+    String string, size_t index) {
+  DisallowGarbageCollection no_gc;
+  // The access guard below protects string accesses related to internalized
+  // strings.
+  // TODO(jgruber): Support other string kinds.
+  Map string_map = string.map(isolate, kAcquireLoad);
+  InstanceType type = string_map.instance_type();
+  if (!(InstanceTypeChecker::IsInternalizedString(type)) ||
+      InstanceTypeChecker::IsThinString(type)) {
+    return kGaveUp;
+  }
+
+  const uint32_t length = static_cast<uint32_t>(string.length());
+  if (index >= length) return kGaveUp;
+
+  uint16_t charcode;
+  {
+    SharedStringAccessGuardIfNeeded access_guard(local_isolate);
+    charcode = string.Get(static_cast<int>(index), PtrComprCageBase(isolate),
+                          access_guard);
+  }
+
+  if (charcode > unibrow::Latin1::kMaxChar) return kGaveUp;
+
+  Object value = isolate->factory()->single_character_string_cache()->get(
+      charcode, kRelaxedLoad);
+  if (value == ReadOnlyRoots(isolate).undefined_value()) return kGaveUp;
+
+  *result_out = String::cast(value);
+  return kPresent;
+}
+
+// static
 base::Optional<PropertyCell> ConcurrentLookupIterator::TryGetPropertyCell(
     Isolate* isolate, LocalIsolate* local_isolate,
     Handle<JSGlobalObject> holder, Handle<Name> name) {
   DisallowGarbageCollection no_gc;
 
   Map holder_map = holder->map();
-  CHECK(!holder_map.is_access_check_needed());
-  CHECK(!holder_map.has_named_interceptor());
+  if (holder_map.is_access_check_needed()) return {};
+  if (holder_map.has_named_interceptor()) return {};
 
   GlobalDictionary dict = holder->global_dictionary(kAcquireLoad);
   base::Optional<PropertyCell> cell =
@@ -1534,7 +1545,7 @@ base::Optional<PropertyCell> ConcurrentLookupIterator::TryGetPropertyCell(
     base::Optional<Name> maybe_cached_property_name =
         FunctionTemplateInfo::TryGetCachedPropertyName(
             isolate, AccessorPair::cast(maybe_accessor_pair)
-                         .getter(isolate, kRelaxedLoad));
+                         .getter(isolate, kAcquireLoad));
     if (!maybe_cached_property_name.has_value()) return {};
 
     cell = dict.TryFindPropertyCellForConcurrentLookupIterator(

@@ -218,8 +218,9 @@ class V8_EXPORT_PRIVATE StatsCollector final {
   using DisabledConcurrentScope = InternalScope<kDisabled, kConcurrentThread>;
   using EnabledConcurrentScope = InternalScope<kEnabled, kConcurrentThread>;
 
-  // Observer for allocated object size. May be used to implement heap growing
-  // heuristics.
+  // Observer for allocated object size. May e.g. be used to implement heap
+  // growing heuristics. Observers may register/unregister observers at any
+  // time when being invoked.
   class AllocationObserver {
    public:
     // Called after observing at least
@@ -334,9 +335,10 @@ class V8_EXPORT_PRIVATE StatsCollector final {
   // arithmetic for simplicity.
   int64_t allocated_bytes_since_safepoint_ = 0;
   int64_t explicitly_freed_bytes_since_safepoint_ = 0;
-#ifdef CPPGC_VERIFY_LIVE_BYTES
-  size_t live_bytes_ = 0;
-#endif  // CPPGC_VERIFY_LIVE_BYTES
+#ifdef CPPGC_VERIFY_HEAP
+  // Tracks live bytes for overflows.
+  size_t tracked_live_bytes_ = 0;
+#endif  // CPPGC_VERIFY_HEAP
 
   int64_t memory_allocated_bytes_ = 0;
   int64_t memory_freed_bytes_since_end_of_marking_ = 0;
@@ -345,6 +347,7 @@ class V8_EXPORT_PRIVATE StatsCollector final {
   // vector to allow fast iteration of observers. Register/Unregisters only
   // happens on startup/teardown.
   std::vector<AllocationObserver*> allocation_observers_;
+  bool allocation_observer_deleted_ = false;
 
   GarbageCollectionState gc_state_ = GarbageCollectionState::kNotRunning;
 
@@ -362,8 +365,19 @@ class V8_EXPORT_PRIVATE StatsCollector final {
 
 template <typename Callback>
 void StatsCollector::ForAllAllocationObservers(Callback callback) {
-  for (AllocationObserver* observer : allocation_observers_) {
-    callback(observer);
+  // Iterate using indices to allow push_back() of new observers.
+  for (size_t i = 0; i < allocation_observers_.size(); ++i) {
+    auto* observer = allocation_observers_[i];
+    if (observer) {
+      callback(observer);
+    }
+  }
+  if (allocation_observer_deleted_) {
+    allocation_observers_.erase(
+        std::remove(allocation_observers_.begin(), allocation_observers_.end(),
+                    nullptr),
+        allocation_observers_.end());
+    allocation_observer_deleted_ = false;
   }
 }
 

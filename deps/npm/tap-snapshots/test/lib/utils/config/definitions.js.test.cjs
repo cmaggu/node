@@ -63,6 +63,7 @@ Array [
   "ignore-scripts",
   "include",
   "include-staged",
+  "include-workspace-root",
   "init-author-email",
   "init-author-name",
   "init-author-url",
@@ -82,6 +83,7 @@ Array [
   "link",
   "local-address",
   "location",
+  "lockfile-version",
   "loglevel",
   "logs-max",
   "long",
@@ -831,6 +833,19 @@ Allow installing "staged" published packages, as defined by [npm RFC PR
 This is experimental, and not implemented by the npm public registry.
 `
 
+exports[`test/lib/utils/config/definitions.js TAP > config description for include-workspace-root 1`] = `
+#### \`include-workspace-root\`
+
+* Default: false
+* Type: Boolean
+
+Include the workspace root when workspaces are enabled for a command.
+
+When false, specifying individual workspaces via the \`workspace\` config, or
+all workspaces via the \`workspaces\` flag, will cause npm to operate only on
+the specified workspaces, and not on the root project.
+`
+
 exports[`test/lib/utils/config/definitions.js TAP > config description for init-author-email 1`] = `
 #### \`init-author-email\`
 
@@ -1041,6 +1056,30 @@ exports[`test/lib/utils/config/definitions.js TAP > config description for locat
 When passed to \`npm config\` this refers to which config file to use.
 `
 
+exports[`test/lib/utils/config/definitions.js TAP > config description for lockfile-version 1`] = `
+#### \`lockfile-version\`
+
+* Default: Version 2 if no lockfile or current lockfile version less than or
+  equal to 2, otherwise maintain current lockfile version
+* Type: null, 1, 2, 3, "1", "2", or "3"
+
+Set the lockfile format version to be used in package-lock.json and
+npm-shrinkwrap-json files. Possible options are:
+
+1: The lockfile version used by npm versions 5 and 6. Lacks some data that
+is used during the install, resulting in slower and possibly less
+deterministic installs. Prevents lockfile churn when interoperating with
+older npm versions.
+
+2: The default lockfile version used by npm version 7. Includes both the
+version 1 lockfile data and version 3 lockfile data, for maximum determinism
+and interoperability, at the expense of more bytes on disk.
+
+3: Only the new lockfile information introduced in npm version 7. Smaller on
+disk than lockfile version 2, but not interoperable with older npm versions.
+Ideal if all users are on npm version 7 and higher.
+`
+
 exports[`test/lib/utils/config/definitions.js TAP > config description for loglevel 1`] = `
 #### \`loglevel\`
 
@@ -1048,8 +1087,8 @@ exports[`test/lib/utils/config/definitions.js TAP > config description for logle
 * Type: "silent", "error", "warn", "notice", "http", "timing", "info",
   "verbose", or "silly"
 
-What level of logs to report. On failure, *all* logs are written to
-\`npm-debug.log\` in the current working directory.
+What level of logs to report. All logs are written to a debug log, with the
+path to that file printed if the execution of a command fails.
 
 Any logs of a higher level than the setting are shown. The default is
 "notice".
@@ -1367,13 +1406,16 @@ The base URL of the npm registry.
 exports[`test/lib/utils/config/definitions.js TAP > config description for save 1`] = `
 #### \`save\`
 
-* Default: true
+* Default: \`true\` unless when using \`npm update\` or \`npm dedupe\` where it
+  defaults to \`false\`
 * Type: Boolean
 
-Save installed packages to a package.json file as dependencies.
+Save installed packages to a \`package.json\` file as dependencies.
 
 When used with the \`npm rm\` command, removes the dependency from
-package.json.
+\`package.json\`.
+
+Will also prevent writing to \`package-lock.json\` if set to \`false\`.
 `
 
 exports[`test/lib/utils/config/definitions.js TAP > config description for save-bundle 1`] = `
@@ -1423,7 +1465,7 @@ exports[`test/lib/utils/config/definitions.js TAP > config description for save-
 * Default: false
 * Type: Boolean
 
-Save installed packages. to a package.json file as \`peerDependencies\`
+Save installed packages to a package.json file as \`peerDependencies\`
 `
 
 exports[`test/lib/utils/config/definitions.js TAP > config description for save-prefix 1`] = `
@@ -1839,8 +1881,8 @@ Valid values for the \`workspace\` config are either:
 
 * Workspace names
 * Path to a workspace directory
-* Path to a parent workspace directory (will result to selecting all of the
-  nested workspaces)
+* Path to a parent workspace directory (will result in selecting all
+  workspaces within that folder)
 
 When set for the \`npm init\` command, this may be set to the folder of a
 workspace which does not yet exist, to create the folder and set it up as a
@@ -1852,11 +1894,19 @@ This value is not exported to the environment for child processes.
 exports[`test/lib/utils/config/definitions.js TAP > config description for workspaces 1`] = `
 #### \`workspaces\`
 
-* Default: false
-* Type: Boolean
+* Default: null
+* Type: null or Boolean
 
-Enable running a command in the context of **all** the configured
+Set to true to run the command in the context of **all** configured
 workspaces.
+
+Explicitly setting this to false will cause commands like \`install\` to
+ignore workspaces altogether. When not set explicitly:
+
+- Commands that operate on the \`node_modules\` tree (install, update, etc.)
+will link workspaces into the \`node_modules\` folder. - Commands that do
+other things (test, exec, publish, etc.) will operate on the root project,
+_unless_ one or more workspaces are specified in the \`workspace\` config.
 
 This value is not exported to the environment for child processes.
 `

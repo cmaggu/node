@@ -14,6 +14,9 @@
 #include <unordered_set>
 #include <vector>
 
+#include "include/v8-array-buffer.h"
+#include "include/v8-isolate.h"
+#include "include/v8-script.h"
 #include "src/base/once.h"
 #include "src/base/platform/time.h"
 #include "src/base/platform/wrappers.h"
@@ -24,7 +27,11 @@
 
 namespace v8 {
 
+class BackingStore;
+class CompiledWasmModule;
 class D8Console;
+class Message;
+class TryCatch;
 
 enum class ModuleType { kJavaScript, kJSON, kInvalid };
 
@@ -385,14 +392,17 @@ class ShellOptions {
   DisallowReassignment<bool> interactive_shell = {"shell", false};
   bool test_shell = false;
   DisallowReassignment<bool> expected_to_throw = {"throws", false};
+  DisallowReassignment<bool> no_fail = {"no-fail", false};
   DisallowReassignment<bool> ignore_unhandled_promises = {
       "ignore-unhandled-promises", false};
   DisallowReassignment<bool> mock_arraybuffer_allocator = {
       "mock-arraybuffer-allocator", false};
   DisallowReassignment<size_t> mock_arraybuffer_allocator_limit = {
       "mock-arraybuffer-allocator-limit", 0};
+#if MULTI_MAPPED_ALLOCATOR_AVAILABLE
   DisallowReassignment<bool> multi_mapped_mock_allocator = {
       "multi-mapped-mock-allocator", false};
+#endif
   DisallowReassignment<bool> enable_inspector = {"enable-inspector", false};
   int num_isolates = 1;
   DisallowReassignment<v8::ScriptCompiler::CompileOptions, true>
@@ -426,6 +436,8 @@ class ShellOptions {
       "enable-system-instrumentation", false};
   DisallowReassignment<const char*> web_snapshot_config = {
       "web-snapshot-config", nullptr};
+  DisallowReassignment<const char*> web_snapshot_output = {
+      "web-snapshot-output", nullptr};
   DisallowReassignment<bool> d8_web_snapshot_api = {
       "experimental-d8-web-snapshot-api", false};
   DisallowReassignment<bool> compile_only = {"compile-only", false};
@@ -433,6 +445,7 @@ class ShellOptions {
 #if V8_ENABLE_WEBASSEMBLY
   DisallowReassignment<bool> wasm_trap_handler = {"wasm-trap-handler", true};
 #endif  // V8_ENABLE_WEBASSEMBLY
+  DisallowReassignment<bool> expose_fast_api = {"expose-fast-api", false};
 };
 
 class Shell : public i::AllStatic {
@@ -594,7 +607,7 @@ class Shell : public i::AllStatic {
   static void MakeDirectory(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void RemoveDirectory(const v8::FunctionCallbackInfo<v8::Value>& args);
   static MaybeLocal<Promise> HostImportModuleDynamically(
-      Local<Context> context, Local<ScriptOrModule> referrer,
+      Local<Context> context, Local<ScriptOrModule> script_or_module,
       Local<String> specifier, Local<FixedArray> import_assertions);
 
   static void ModuleResolutionSuccessCallback(
@@ -619,6 +632,7 @@ class Shell : public i::AllStatic {
   static const char* kPrompt;
   static ShellOptions options;
   static ArrayBuffer::Allocator* array_buffer_allocator;
+  static Isolate* shared_isolate;
 
   static void SetWaitUntilDone(Isolate* isolate, bool value);
   static void NotifyStartStreamingTask(Isolate* isolate);

@@ -5,8 +5,6 @@
 #ifndef V8_LOGGING_RUNTIME_CALL_STATS_H_
 #define V8_LOGGING_RUNTIME_CALL_STATS_H_
 
-#include "include/v8.h"
-
 #ifdef V8_RUNTIME_CALL_STATS
 
 #include "src/base/atomic-utils.h"
@@ -247,7 +245,7 @@ class RuntimeCallTimer final {
   V(RegExp_Exec)                                           \
   V(RegExp_New)                                            \
   V(ScriptCompiler_Compile)                                \
-  V(ScriptCompiler_CompileFunctionInContext)               \
+  V(ScriptCompiler_CompileFunction)                        \
   V(ScriptCompiler_CompileUnbound)                         \
   V(Script_Run)                                            \
   V(Set_Add)                                               \
@@ -339,6 +337,7 @@ class RuntimeCallTimer final {
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, FrameElision)                    \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, GenericLowering)                 \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, Inlining)                        \
+  ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, JSWasmInlining)                  \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, JumpThreading)                   \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, MidTierPopulateReferenceMaps)    \
   ADD_THREAD_SPECIFIC_COUNTER(V, Optimize, MidTierRegisterAllocator)        \
@@ -393,6 +392,9 @@ class RuntimeCallTimer final {
   V(CompileBaseline)                           \
   V(CompileBaselinePreVisit)                   \
   V(CompileBaselineVisit)                      \
+  V(CompileBackgroundBaselinePreVisit)         \
+  V(CompileBackgroundBaselineVisit)            \
+  V(CompileBaselineFinalization)               \
   V(CompileCollectSourcePositions)             \
   V(CompileDeserialize)                        \
   V(CompileEnqueueOnDispatcher)                \
@@ -477,6 +479,7 @@ class RuntimeCallTimer final {
   V(WebSnapshotDeserialize_Contexts)           \
   V(WebSnapshotDeserialize_Exports)            \
   V(WebSnapshotDeserialize_Functions)          \
+  V(WebSnapshotDeserialize_Classes)            \
   V(WebSnapshotDeserialize_Maps)               \
   V(WebSnapshotDeserialize_Objects)            \
   V(WebSnapshotDeserialize_Strings)
@@ -595,9 +598,6 @@ class RuntimeCallStats final {
   V8_EXPORT_PRIVATE void Print(std::ostream& os);
   V8_EXPORT_PRIVATE void Print();
   V8_NOINLINE void Dump(v8::tracing::TracedValue* value);
-
-  V8_EXPORT_PRIVATE void EnumerateCounters(
-      debug::RuntimeCallCounterCallback callback);
 
   ThreadId thread_id() const { return thread_id_; }
   RuntimeCallTimer* current_timer() { return current_timer_.Value(); }

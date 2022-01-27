@@ -4,6 +4,7 @@
 
 #include "src/heap/scavenger.h"
 
+#include "src/handles/global-handles.h"
 #include "src/heap/array-buffer-sweeper.h"
 #include "src/heap/barrier.h"
 #include "src/heap/gc-tracer.h"
@@ -41,12 +42,21 @@ class IterateAndScavengePromotedObjectsVisitor final : public ObjectVisitor {
     VisitPointersImpl(host, start, end);
   }
 
+  V8_INLINE void VisitCodePointer(HeapObject host, CodeObjectSlot slot) final {
+    CHECK(V8_EXTERNAL_CODE_SPACE_BOOL);
+    // Code slots never appear in new space because CodeDataContainers, the
+    // only object that can contain code pointers, are always allocated in
+    // the old space.
+    UNREACHABLE();
+  }
+
   V8_INLINE void VisitCodeTarget(Code host, RelocInfo* rinfo) final {
     Code target = Code::GetCodeFromTargetAddress(rinfo->target_address());
     HandleSlot(host, FullHeapObjectSlot(&target), target);
   }
   V8_INLINE void VisitEmbeddedPointer(Code host, RelocInfo* rinfo) final {
-    HeapObject heap_object = rinfo->target_object();
+    PtrComprCageBase cage_base = host.main_cage_base();
+    HeapObject heap_object = rinfo->target_object(cage_base);
     HandleSlot(host, FullHeapObjectSlot(&heap_object), heap_object);
   }
 
@@ -114,6 +124,13 @@ class IterateAndScavengePromotedObjectsVisitor final : public ObjectVisitor {
                                     HeapObject::cast(target))) {
       // We should never try to record off-heap slots.
       DCHECK((std::is_same<THeapObjectSlot, HeapObjectSlot>::value));
+      // Code slots never appear in new space because CodeDataContainers, the
+      // only object that can contain code pointers, are always allocated in
+      // the old space.
+      DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL,
+                     !MemoryChunk::FromHeapObject(target)->IsFlagSet(
+                         MemoryChunk::IS_EXECUTABLE));
+
       // We cannot call MarkCompactCollector::RecordSlot because that checks
       // that the host page is not in young generation, which does not hold
       // for pending large pages.
@@ -178,8 +195,8 @@ void ScavengerCollector::JobTask::Run(JobDelegate* delegate) {
   DCHECK_LT(delegate->GetTaskId(), scavengers_->size());
   Scavenger* scavenger = (*scavengers_)[delegate->GetTaskId()].get();
   if (delegate->IsJoiningThread()) {
-    TRACE_GC(outer_->heap_->tracer(),
-             GCTracer::Scope::SCAVENGER_SCAVENGE_PARALLEL);
+    // This is already traced in GCTracer::Scope::SCAVENGER_SCAVENGE_PARALLEL
+    // in ScavengerCollector::CollectGarbage.
     ProcessItems(delegate, scavenger);
   } else {
     TRACE_GC_EPOCH(outer_->heap_->tracer(),
@@ -475,7 +492,8 @@ void ScavengerCollector::IterateStackAndScavenge(
 }
 
 void ScavengerCollector::SweepArrayBufferExtensions() {
-  heap_->array_buffer_sweeper()->RequestSweepYoung();
+  heap_->array_buffer_sweeper()->RequestSweep(
+      ArrayBufferSweeper::SweepingType::kYoung);
 }
 
 void ScavengerCollector::HandleSurvivingNewLargeObjects() {
@@ -530,9 +548,12 @@ Scavenger::Scavenger(ScavengerCollector* collector, Heap* heap, bool is_logging,
       copied_size_(0),
       promoted_size_(0),
       allocator_(heap, CompactionSpaceKind::kCompactionSpaceForScavenge),
+      shared_old_allocator_(heap_->shared_old_allocator_.get()),
       is_logging_(is_logging),
       is_incremental_marking_(heap->incremental_marking()->IsMarking()),
-      is_compacting_(heap->incremental_marking()->IsCompacting()) {}
+      is_compacting_(heap->incremental_marking()->IsCompacting()),
+      shared_string_table_(FLAG_shared_string_table &&
+                           (heap->isolate()->shared_isolate() != nullptr)) {}
 
 void Scavenger::IterateAndScavengePromotedObject(HeapObject target, Map map,
                                                  int size) {
@@ -764,7 +785,8 @@ RootScavengeVisitor::RootScavengeVisitor(Scavenger* scavenger)
     : scavenger_(scavenger) {}
 
 ScavengeVisitor::ScavengeVisitor(Scavenger* scavenger)
-    : scavenger_(scavenger) {}
+    : NewSpaceVisitor<ScavengeVisitor>(scavenger->heap()->isolate()),
+      scavenger_(scavenger) {}
 
 }  // namespace internal
 }  // namespace v8

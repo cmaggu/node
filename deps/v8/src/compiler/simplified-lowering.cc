@@ -160,6 +160,7 @@ UseInfo TruncatingUseInfoFromRepresentation(MachineRepresentation rep) {
       return UseInfo::Bool();
     case MachineRepresentation::kCompressedPointer:
     case MachineRepresentation::kCompressed:
+    case MachineRepresentation::kCagedPointer:
     case MachineRepresentation::kSimd128:
     case MachineRepresentation::kNone:
       break;
@@ -797,6 +798,26 @@ class RepresentationSelector {
     ChangeOp(node, dead_value);
   }
 
+  // This function is a generalization of ChangeToPureOp. It can be used to
+  // replace a node that is part of the effect and control chain by a pure node.
+  void ReplaceWithPureNode(Node* node, Node* pure_node) {
+    DCHECK(pure_node->op()->HasProperty(Operator::kPure));
+    if (node->op()->EffectInputCount() > 0) {
+      DCHECK_LT(0, node->op()->ControlInputCount());
+      Node* control = NodeProperties::GetControlInput(node);
+      Node* effect = NodeProperties::GetEffectInput(node);
+      if (TypeOf(node).IsNone()) {
+        ChangeToDeadValue(node, effect, control);
+        return;
+      }
+      // Rewire the effect and control chains.
+      ReplaceEffectControlUses(node, effect, control);
+    } else {
+      DCHECK_EQ(0, node->op()->ControlInputCount());
+    }
+    DeferReplacement(node, pure_node);
+  }
+
   void ChangeToPureOp(Node* node, const Operator* new_op) {
     DCHECK(new_op->HasProperty(Operator::kPure));
     DCHECK_EQ(new_op->ValueInputCount(), node->op()->ValueInputCount());
@@ -1053,7 +1074,8 @@ class RepresentationSelector {
     } else if (type.Is(Type::BigInt()) && use.IsUsedAsWord64()) {
       return MachineRepresentation::kWord64;
     } else if (type.Is(Type::ExternalPointer()) ||
-               type.Is(Type::SandboxedExternalPointer())) {
+               type.Is(Type::SandboxedExternalPointer()) ||
+               type.Is(Type::CagedPointer())) {
       return MachineType::PointerRepresentation();
     }
     return MachineRepresentation::kTagged;
@@ -1735,11 +1757,9 @@ class RepresentationSelector {
         VisitBinop<T>(node, UseInfo::TruncatingWord32(),
                       MachineRepresentation::kWord32);
         if (lower<T>()) {
-          if (lowering->poisoning_level_ ==
-                  PoisoningMitigationLevel::kDontPoison &&
-              (index_type.IsNone() || length_type.IsNone() ||
-               (index_type.Min() >= 0.0 &&
-                index_type.Max() < length_type.Min()))) {
+          if (index_type.IsNone() || length_type.IsNone() ||
+              (index_type.Min() >= 0.0 &&
+               index_type.Max() < length_type.Min())) {
             // The bounds check is redundant if we already know that
             // the index is within the bounds of [0.0, length[.
             // TODO(neis): Move this into TypedOptimization?
@@ -2850,23 +2870,50 @@ class RepresentationSelector {
         }
         return;
       }
+      case IrOpcode::kSpeculativeBigIntAsIntN:
       case IrOpcode::kSpeculativeBigIntAsUintN: {
-        const auto p = SpeculativeBigIntAsUintNParametersOf(node->op());
+        const bool is_asuintn =
+            node->opcode() == IrOpcode::kSpeculativeBigIntAsUintN;
+        const auto p = SpeculativeBigIntAsNParametersOf(node->op());
         DCHECK_LE(0, p.bits());
         DCHECK_LE(p.bits(), 64);
 
         ProcessInput<T>(node, 0,
                         UseInfo::CheckedBigIntTruncatingWord64(p.feedback()));
-        SetOutput<T>(node, MachineRepresentation::kWord64, Type::BigInt());
+        SetOutput<T>(
+            node, MachineRepresentation::kWord64,
+            is_asuintn ? Type::UnsignedBigInt64() : Type::SignedBigInt64());
         if (lower<T>()) {
           if (p.bits() == 0) {
             DeferReplacement(node, jsgraph_->ZeroConstant());
           } else if (p.bits() == 64) {
             DeferReplacement(node, node->InputAt(0));
           } else {
-            const uint64_t mask = (1ULL << p.bits()) - 1ULL;
-            ChangeUnaryToPureBinaryOp(node, lowering->machine()->Word64And(), 1,
-                                      jsgraph_->Int64Constant(mask));
+            if (is_asuintn) {
+              const uint64_t mask = (1ULL << p.bits()) - 1ULL;
+              ChangeUnaryToPureBinaryOp(node, lowering->machine()->Word64And(),
+                                        1, jsgraph_->Int64Constant(mask));
+            } else {
+              // We truncate the value to N bits, but to correctly interpret
+              // negative values, we have to fill the top (64-N) bits with the
+              // sign. This is done by shifting the value left and then back
+              // with an arithmetic right shift. E.g. for {value} =
+              // 0..0'0001'1101 (29n) and N = 3: {shifted} is 1010'0000'0..0
+              // after left shift by 61 bits, {unshifted} is 1..1'1111'1101
+              // after arithmetic right shift by 61. This is the 64 bit
+              // representation of -3 we expect for the signed 3 bit integer
+              // 101.
+              const uint64_t shift = 64 - p.bits();
+              Node* value = node->InputAt(0);
+              Node* shifted =
+                  graph()->NewNode(lowering->machine()->Word64Shl(), value,
+                                   jsgraph_->Uint64Constant(shift));
+              Node* unshifted =
+                  graph()->NewNode(lowering->machine()->Word64Sar(), shifted,
+                                   jsgraph_->Uint64Constant(shift));
+
+              ReplaceWithPureNode(node, unshifted);
+            }
           }
         }
         return;
@@ -3181,11 +3228,6 @@ class RepresentationSelector {
       }
       case IrOpcode::kCheckBounds:
         return VisitCheckBounds<T>(node, lowering);
-      case IrOpcode::kPoisonIndex: {
-        VisitUnop<T>(node, UseInfo::TruncatingWord32(),
-                     MachineRepresentation::kWord32);
-        return;
-      }
       case IrOpcode::kCheckHeapObject: {
         if (InputCannotBe(node, Type::SignedSmall())) {
           VisitUnop<T>(node, UseInfo::AnyTagged(),
@@ -3835,7 +3877,7 @@ class RepresentationSelector {
 
       case IrOpcode::kDateNow:
         VisitInputs<T>(node);
-        return SetOutput<T>(node, MachineRepresentation::kTaggedPointer);
+        return SetOutput<T>(node, MachineRepresentation::kTagged);
       case IrOpcode::kFrameState:
         return VisitFrameState<T>(FrameState{node});
       case IrOpcode::kStateValues:
@@ -4225,18 +4267,19 @@ void RepresentationSelector::InsertUnreachableIfNecessary<LOWER>(Node* node) {
   }
 }
 
-SimplifiedLowering::SimplifiedLowering(
-    JSGraph* jsgraph, JSHeapBroker* broker, Zone* zone,
-    SourcePositionTable* source_positions, NodeOriginTable* node_origins,
-    PoisoningMitigationLevel poisoning_level, TickCounter* tick_counter,
-    Linkage* linkage, ObserveNodeManager* observe_node_manager)
+SimplifiedLowering::SimplifiedLowering(JSGraph* jsgraph, JSHeapBroker* broker,
+                                       Zone* zone,
+                                       SourcePositionTable* source_positions,
+                                       NodeOriginTable* node_origins,
+                                       TickCounter* tick_counter,
+                                       Linkage* linkage,
+                                       ObserveNodeManager* observe_node_manager)
     : jsgraph_(jsgraph),
       broker_(broker),
       zone_(zone),
       type_cache_(TypeCache::Get()),
       source_positions_(source_positions),
       node_origins_(node_origins),
-      poisoning_level_(poisoning_level),
       tick_counter_(tick_counter),
       linkage_(linkage),
       observe_node_manager_(observe_node_manager) {}

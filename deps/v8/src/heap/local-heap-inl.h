@@ -10,6 +10,7 @@
 #include "src/common/assert-scope.h"
 #include "src/handles/persistent-handles.h"
 #include "src/heap/concurrent-allocator-inl.h"
+#include "src/heap/heap.h"
 #include "src/heap/local-heap.h"
 
 namespace v8 {
@@ -27,16 +28,31 @@ AllocationResult LocalHeap::AllocateRaw(int size_in_bytes, AllocationType type,
                  alignment == AllocationAlignment::kWordAligned);
   Heap::HeapState state = heap()->gc_state();
   DCHECK(state == Heap::TEAR_DOWN || state == Heap::NOT_IN_GC);
-  ThreadState current = state_.load(std::memory_order_relaxed);
-  DCHECK(current == kRunning || current == kSafepointRequested);
+  DCHECK(IsRunning());
 #endif
 
   // Each allocation is supposed to be a safepoint.
   Safepoint();
 
   bool large_object = size_in_bytes > heap_->MaxRegularHeapObjectSize(type);
-  CHECK_EQ(type, AllocationType::kOld);
 
+  if (type == AllocationType::kCode) {
+    AllocationResult alloc;
+    if (large_object) {
+      alloc =
+          heap()->code_lo_space()->AllocateRawBackground(this, size_in_bytes);
+    } else {
+      alloc =
+          code_space_allocator()->AllocateRaw(size_in_bytes, alignment, origin);
+    }
+    HeapObject object;
+    if (alloc.To(&object) && !V8_ENABLE_THIRD_PARTY_HEAP_BOOL) {
+      heap()->ZapCodeObject(object.address(), size_in_bytes);
+    }
+    return alloc;
+  }
+
+  CHECK_EQ(type, AllocationType::kOld);
   if (large_object)
     return heap()->lo_space()->AllocateRawBackground(this, size_in_bytes);
   else
@@ -51,6 +67,13 @@ Address LocalHeap::AllocateRawOrFail(int object_size, AllocationType type,
   if (!result.IsRetry()) return result.ToObject().address();
   return PerformCollectionAndAllocateAgain(object_size, type, origin,
                                            alignment);
+}
+
+void LocalHeap::CreateFillerObjectAt(Address addr, int size,
+                                     ClearRecordedSlots clear_slots_mode) {
+  DCHECK_EQ(clear_slots_mode, ClearRecordedSlots::kNo);
+  heap()->CreateFillerObjectAtBackground(
+      addr, size, ClearFreedMemoryMode::kDontClearFreedMemory);
 }
 
 }  // namespace internal

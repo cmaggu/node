@@ -45,6 +45,8 @@ enum BoundsCheckStrategy : int8_t {
   kNoBoundsChecks
 };
 
+enum class DynamicTiering { kEnabled, kDisabled };
+
 // The {CompilationEnv} encapsulates the module data that is used during
 // compilation. CompilationEnvs are shareable across multiple compilations.
 struct CompilationEnv {
@@ -70,10 +72,13 @@ struct CompilationEnv {
   // Features enabled for this compilation.
   const WasmFeatures enabled_features;
 
+  const DynamicTiering dynamic_tiering;
+
   constexpr CompilationEnv(const WasmModule* module,
                            BoundsCheckStrategy bounds_checks,
                            RuntimeExceptionSupport runtime_exception_support,
-                           const WasmFeatures& enabled_features)
+                           const WasmFeatures& enabled_features,
+                           DynamicTiering dynamic_tiering)
       : module(module),
         bounds_checks(bounds_checks),
         runtime_exception_support(runtime_exception_support),
@@ -88,7 +93,8 @@ struct CompilationEnv {
                                         uintptr_t{module->maximum_pages})
                              : kV8MaxWasmMemoryPages) *
                         kWasmPageSize),
-        enabled_features(enabled_features) {}
+        enabled_features(enabled_features),
+        dynamic_tiering(dynamic_tiering) {}
 };
 
 // The wire bytes are either owned by the StreamingDecoder, or (after streaming)
@@ -105,6 +111,7 @@ class WireBytesStorage {
 enum class CompilationEvent : uint8_t {
   kFinishedBaselineCompilation,
   kFinishedExportWrappers,
+  kFinishedCompilationChunk,
   kFinishedTopTierCompilation,
   kFailedCompilation,
   kFinishedRecompilation
@@ -132,7 +139,8 @@ class V8_EXPORT_PRIVATE CompilationState {
 
   void AddCallback(callback_t);
 
-  void InitializeAfterDeserialization();
+  void InitializeAfterDeserialization(
+      base::Vector<const int> missing_functions);
 
   // Wait until top tier compilation finished, or compilation failed.
   void WaitForTopTierFinished();
@@ -146,6 +154,8 @@ class V8_EXPORT_PRIVATE CompilationState {
   bool recompilation_finished() const;
 
   void set_compilation_id(int compilation_id);
+
+  DynamicTiering dynamic_tiering() const;
 
   // Override {operator delete} to avoid implicit instantiation of {operator
   // delete} with {size_t} argument. The {size_t} argument would be incorrect.
@@ -161,7 +171,8 @@ class V8_EXPORT_PRIVATE CompilationState {
   // such that it can keep it alive (by regaining a {std::shared_ptr}) in
   // certain scopes.
   static std::unique_ptr<CompilationState> New(
-      const std::shared_ptr<NativeModule>&, std::shared_ptr<Counters>);
+      const std::shared_ptr<NativeModule>&, std::shared_ptr<Counters>,
+      DynamicTiering dynamic_tiering);
 };
 
 }  // namespace wasm

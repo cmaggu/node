@@ -28,7 +28,7 @@ import htmlStringify from 'rehype-stringify';
 import gfm from 'remark-gfm';
 import markdown from 'remark-parse';
 import remark2rehype from 'remark-rehype';
-import unified from 'unified';
+import { unified } from 'unified';
 import { visit } from 'unist-util-visit';
 
 import * as common from './common.mjs';
@@ -73,10 +73,14 @@ function processContent(content) {
   }
   // `++level` to convert the string to a number and increment it.
   content = content.replace(/(?<=<\/?h)[1-5](?=[^<>]*>)/g, (level) => ++level);
-  // Wrap h3 tags in section tags.
+  // Wrap h3 tags in section tags unless they are immediately preceded by a
+  // section tag. The latter happens when GFM footnotes are generated. We don't
+  // want to add another section tag to the footnotes section at the end of the
+  // document because that will result in an empty section element. While not an
+  // HTML error, it's enough for validator.w3.org to print a warning.
   let firstTime = true;
   return content
-    .replace(/<h3/g, (heading) => {
+    .replace(/(?<!<section [^>]+>)<h3/g, (heading) => {
       if (firstTime) {
         firstTime = false;
         return '<section>' + heading;
@@ -227,7 +231,8 @@ export function preprocessElements({ filename }) {
               nextNode.lang !== node.lang) {
             // Saving the highlight code as value to be added in the next node.
             node.value = highlighted;
-          } else if (isJSFlavorSnippet(previousNode)) {
+          } else if (isJSFlavorSnippet(previousNode) &&
+                     previousNode.lang !== node.lang) {
             node.value = '<pre>' +
               '<input class="js-flavor-selector" type="checkbox"' +
               // If CJS comes in second, ESM should display by default.
@@ -396,7 +401,7 @@ export function buildToc({ filename, apilinks }) {
 
       depth = node.depth;
       const realFilename = path.basename(filename, '.md');
-      const headingText = file.contents.slice(
+      const headingText = file.value.slice(
         node.children[0].position.start.offset,
         node.position.end.offset).trim();
       const id = getId(headingText, idCounters);

@@ -24,8 +24,12 @@
 
 #include "include/libplatform/libplatform.h"
 #include "include/libplatform/v8-tracing.h"
+#include "include/v8-function.h"
+#include "include/v8-initialization.h"
 #include "include/v8-inspector.h"
+#include "include/v8-json.h"
 #include "include/v8-profiler.h"
+#include "include/v8-wasm.h"
 #include "src/api/api-inl.h"
 #include "src/base/cpu.h"
 #include "src/base/logging.h"
@@ -48,7 +52,7 @@
 #include "src/interpreter/interpreter.h"
 #include "src/logging/counters.h"
 #include "src/logging/log-utils.h"
-#include "src/objects/managed.h"
+#include "src/objects/managed-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/objects.h"
 #include "src/parsing/parse-info.h"
@@ -166,7 +170,7 @@ class ShellArrayBufferAllocator : public ArrayBufferAllocatorBase {
 
   void* AllocateVM(size_t length) {
     DCHECK_LE(kVMThreshold, length);
-    v8::PageAllocator* page_allocator = i::GetPlatformPageAllocator();
+    v8::PageAllocator* page_allocator = i::GetArrayBufferPageAllocator();
     size_t page_size = page_allocator->AllocatePageSize();
     size_t allocated = RoundUp(length, page_size);
     return i::AllocatePages(page_allocator, nullptr, allocated, page_size,
@@ -174,7 +178,7 @@ class ShellArrayBufferAllocator : public ArrayBufferAllocatorBase {
   }
 
   void FreeVM(void* data, size_t length) {
-    v8::PageAllocator* page_allocator = i::GetPlatformPageAllocator();
+    v8::PageAllocator* page_allocator = i::GetArrayBufferPageAllocator();
     size_t page_size = page_allocator->AllocatePageSize();
     size_t allocated = RoundUp(length, page_size);
     CHECK(i::FreePages(page_allocator, data, allocated));
@@ -236,7 +240,7 @@ class MockArrayBufferAllocatiorWithLimit : public MockArrayBufferAllocator {
   std::atomic<size_t> space_left_;
 };
 
-#ifdef V8_OS_LINUX
+#if MULTI_MAPPED_ALLOCATOR_AVAILABLE
 
 // This is a mock allocator variant that provides a huge virtual allocation
 // backed by a small real allocation that is repeatedly mapped. If you create an
@@ -329,7 +333,7 @@ class MultiMappedAllocator : public ArrayBufferAllocatorBase {
   base::Mutex regions_mutex_;
 };
 
-#endif  // V8_OS_LINUX
+#endif  // MULTI_MAPPED_ALLOCATOR_AVAILABLE
 
 v8::Platform* g_default_platform;
 std::unique_ptr<v8::Platform> g_platform;
@@ -472,6 +476,7 @@ std::atomic<int> Shell::unhandled_promise_rejections_{0};
 
 Global<Context> Shell::evaluation_context_;
 ArrayBuffer::Allocator* Shell::array_buffer_allocator;
+Isolate* Shell::shared_isolate = nullptr;
 bool check_d8_flag_contradictions = true;
 ShellOptions Shell::options;
 base::OnceType Shell::quit_once_ = V8_ONCE_INIT;
@@ -644,8 +649,8 @@ bool Shell::ExecuteString(Isolate* isolate, Local<String> source,
                           Local<Value> name, PrintResult print_result,
                           ReportExceptions report_exceptions,
                           ProcessMessageQueue process_message_queue) {
+  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
   if (i::FLAG_parse_only) {
-    i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
     i::VMState<PARSER> state(i_isolate);
     i::Handle<i::String> str = Utils::OpenHandle(*(source));
 
@@ -681,6 +686,15 @@ bool Shell::ExecuteString(Isolate* isolate, Local<String> source,
   TryCatch try_catch(isolate);
   try_catch.SetVerbose(report_exceptions == kReportExceptions);
 
+  // Explicitly check for stack overflows. This method can be called
+  // recursively, and since we consume quite some stack space for the C++
+  // frames, the stack check in the called frame might be too late.
+  if (i::StackLimitCheck{i_isolate}.HasOverflowed()) {
+    i_isolate->StackOverflow();
+    i_isolate->OptionalRescheduleException(false);
+    return false;
+  }
+
   MaybeLocal<Value> maybe_result;
   bool success = true;
   {
@@ -693,7 +707,7 @@ bool Shell::ExecuteString(Isolate* isolate, Local<String> source,
     ScriptOrigin origin(isolate, name);
 
     for (int i = 1; i < options.repeat_compile; ++i) {
-      HandleScope handle_scope(isolate);
+      HandleScope handle_scope_for_compiling(isolate);
       if (CompileString<Script>(isolate, context, source, origin).IsEmpty()) {
         return false;
       }
@@ -731,6 +745,11 @@ bool Shell::ExecuteString(Isolate* isolate, Local<String> source,
     data->realm_current_ = data->realm_switch_;
 
     if (options.web_snapshot_config) {
+      const char* web_snapshot_output_file_name = "web.snap";
+      if (options.web_snapshot_output) {
+        web_snapshot_output_file_name = options.web_snapshot_output;
+      }
+
       MaybeLocal<PrimitiveArray> maybe_exports =
           ReadLines(isolate, options.web_snapshot_config);
       Local<PrimitiveArray> exports;
@@ -745,12 +764,17 @@ bool Shell::ExecuteString(Isolate* isolate, Local<String> source,
       i::WebSnapshotData snapshot_data;
       if (serializer.TakeSnapshot(context, exports, snapshot_data)) {
         DCHECK_NOT_NULL(snapshot_data.buffer);
-        WriteChars("web.snap", snapshot_data.buffer, snapshot_data.buffer_size);
+        WriteChars(web_snapshot_output_file_name, snapshot_data.buffer,
+                   snapshot_data.buffer_size);
       } else {
         CHECK(try_catch.HasCaught());
         ReportException(isolate, &try_catch);
         return false;
       }
+    } else if (options.web_snapshot_output) {
+      isolate->ThrowError(
+          "Web snapshots: --web-snapshot-config is needed when "
+          "--web-snapshot-output is passed");
     }
   }
   Local<Value> result;
@@ -837,16 +861,21 @@ std::string NormalizePath(const std::string& path,
   std::string segment;
   while (std::getline(segment_stream, segment, '/')) {
     if (segment == "..") {
-      segments.pop_back();
+      if (!segments.empty()) segments.pop_back();
     } else if (segment != ".") {
       segments.push_back(segment);
     }
   }
   // Join path segments.
   std::ostringstream os;
-  std::copy(segments.begin(), segments.end() - 1,
-            std::ostream_iterator<std::string>(os, "/"));
-  os << *segments.rbegin();
+  if (segments.size() > 1) {
+    std::copy(segments.begin(), segments.end() - 1,
+              std::ostream_iterator<std::string>(os, "/"));
+    os << *segments.rbegin();
+  } else {
+    os << "/";
+    if (!segments.empty()) os << segments[0];
+  }
   return os.str();
 }
 
@@ -1156,7 +1185,7 @@ void Shell::ModuleResolutionFailureCallback(
 }
 
 MaybeLocal<Promise> Shell::HostImportModuleDynamically(
-    Local<Context> context, Local<ScriptOrModule> referrer,
+    Local<Context> context, Local<ScriptOrModule> script_or_module,
     Local<String> specifier, Local<FixedArray> import_assertions) {
   Isolate* isolate = context->GetIsolate();
 
@@ -1164,9 +1193,9 @@ MaybeLocal<Promise> Shell::HostImportModuleDynamically(
       Promise::Resolver::New(context);
   Local<Promise::Resolver> resolver;
   if (maybe_resolver.ToLocal(&resolver)) {
-    DynamicImportData* data =
-        new DynamicImportData(isolate, referrer->GetResourceName().As<String>(),
-                              specifier, import_assertions, resolver);
+    DynamicImportData* data = new DynamicImportData(
+        isolate, script_or_module->GetResourceName().As<String>(), specifier,
+        import_assertions, resolver);
     PerIsolateData::Get(isolate)->AddDynamicImportData(data);
     isolate->EnqueueMicrotask(Shell::DoHostImportModuleDynamically, data);
     return resolver->GetPromise();
@@ -1986,8 +2015,14 @@ void Shell::TestVerifySourcePositions(
 
   auto callable = i::Handle<i::JSFunctionOrBoundFunction>::cast(arg_handle);
   while (callable->IsJSBoundFunction()) {
+    internal::DisallowGarbageCollection no_gc;
     auto bound_function = i::Handle<i::JSBoundFunction>::cast(callable);
     auto bound_target = bound_function->bound_target_function();
+    if (!bound_target.IsJSFunctionOrBoundFunction()) {
+      internal::AllowGarbageCollection allow_gc;
+      isolate->ThrowError("Expected function as bound target.");
+      return;
+    }
     callable =
         handle(i::JSFunctionOrBoundFunction::cast(bound_target), i_isolate);
   }
@@ -2000,7 +2035,7 @@ void Shell::TestVerifySourcePositions(
   i::Handle<i::BytecodeArray> bytecodes =
       handle(function->shared().GetBytecodeArray(i_isolate), i_isolate);
   i::interpreter::BytecodeArrayIterator bytecode_iterator(bytecodes);
-  bool has_baseline = function->shared().HasBaselineData();
+  bool has_baseline = function->shared().HasBaselineCode();
   i::Handle<i::ByteArray> bytecode_offsets;
   std::unique_ptr<i::baseline::BytecodeOffsetIterator> offset_iterator;
   if (has_baseline) {
@@ -2832,19 +2867,8 @@ Local<ObjectTemplate> Shell::CreateGlobalTemplate(Isolate* isolate) {
 Local<ObjectTemplate> Shell::CreateOSTemplate(Isolate* isolate) {
   Local<ObjectTemplate> os_template = ObjectTemplate::New(isolate);
   AddOSMethods(isolate, os_template);
-#if defined(V8_TARGET_OS_LINUX)
-  const char os_name[] = "linux";
-#elif defined(V8_TARGET_OS_WIN)
-  const char os_name[] = "windows";
-#elif defined(V8_TARGET_OS_MACOSX)
-  const char os_name[] = "macos";
-#elif defined(V8_TARGET_OS_ANDROID)
-  const char os_name[] = "android";
-#else
-  const char os_name[] = "unknown";
-#endif
   os_template->Set(isolate, "name",
-                   v8::String::NewFromUtf8Literal(isolate, os_name),
+                   v8::String::NewFromUtf8Literal(isolate, V8_TARGET_OS_STRING),
                    PropertyAttribute::ReadOnly);
   os_template->Set(
       isolate, "d8Path",
@@ -2992,7 +3016,7 @@ Local<ObjectTemplate> Shell::CreateD8Template(Isolate* isolate) {
     // Correctness fuzzing will attempt to compare results of tests with and
     // without turbo_fast_api_calls, so we don't expose the fast_c_api
     // constructor when --correctness_fuzzer_suppressions is on.
-    if (i::FLAG_turbo_fast_api_calls &&
+    if (options.expose_fast_api && i::FLAG_turbo_fast_api_calls &&
         !i::FLAG_correctness_fuzzer_suppressions) {
       test_template->Set(isolate, "FastCAPI",
                          Shell::CreateTestFastCApiTemplate(isolate));
@@ -3168,13 +3192,15 @@ void Shell::WriteIgnitionDispatchCountersFile(v8::Isolate* isolate) {
   Local<Context> context = Context::New(isolate);
   Context::Scope context_scope(context);
 
-  Local<Object> dispatch_counters = reinterpret_cast<i::Isolate*>(isolate)
-                                        ->interpreter()
-                                        ->GetDispatchCountersObject();
+  i::Handle<i::JSObject> dispatch_counters =
+      reinterpret_cast<i::Isolate*>(isolate)
+          ->interpreter()
+          ->GetDispatchCountersObject();
   std::ofstream dispatch_counters_stream(
       i::FLAG_trace_ignition_dispatches_output_file);
   dispatch_counters_stream << *String::Utf8Value(
-      isolate, JSON::Stringify(context, dispatch_counters).ToLocalChecked());
+      isolate, JSON::Stringify(context, Utils::ToLocal(dispatch_counters))
+                   .ToLocalChecked());
 }
 
 namespace {
@@ -3237,10 +3263,10 @@ void Shell::WriteLcovData(v8::Isolate* isolate, const char* file) {
         int end_line = end.GetLineNumber();
         uint32_t count = function_data.Count();
 
-        Local<String> name;
+        Local<String> function_name;
         std::stringstream name_stream;
-        if (function_data.Name().ToLocal(&name)) {
-          name_stream << ToSTLString(isolate, name);
+        if (function_data.Name().ToLocal(&function_name)) {
+          name_stream << ToSTLString(isolate, function_name);
         } else {
           name_stream << "<" << start_line + 1 << "-";
           name_stream << start.GetColumnNumber() << ">";
@@ -3260,8 +3286,8 @@ void Shell::WriteLcovData(v8::Isolate* isolate, const char* file) {
       }
     }
     // Write per-line coverage. LCOV uses 1-based line numbers.
-    for (size_t i = 0; i < lines.size(); i++) {
-      sink << "DA:" << (i + 1) << "," << lines[i] << std::endl;
+    for (size_t j = 0; j < lines.size(); j++) {
+      sink << "DA:" << (j + 1) << "," << lines[j] << std::endl;
     }
     sink << "end_of_record" << std::endl;
   }
@@ -3269,6 +3295,9 @@ void Shell::WriteLcovData(v8::Isolate* isolate, const char* file) {
 
 void Shell::OnExit(v8::Isolate* isolate) {
   isolate->Dispose();
+  if (shared_isolate) {
+    i::Isolate::Delete(reinterpret_cast<i::Isolate*>(shared_isolate));
+  }
 
   if (i::FLAG_dump_counters || i::FLAG_dump_counters_nvp) {
     std::vector<std::pair<std::string, Counter*>> counters(
@@ -3493,15 +3522,9 @@ void Shell::ReadBuffer(const v8::FunctionCallbackInfo<v8::Value>& args) {
     isolate->ThrowError("Error reading file");
     return;
   }
-  std::unique_ptr<v8::BackingStore> backing_store =
-      ArrayBuffer::NewBackingStore(
-          data, length,
-          [](void* data, size_t length, void*) {
-            delete[] reinterpret_cast<uint8_t*>(data);
-          },
-          nullptr);
-  Local<v8::ArrayBuffer> buffer =
-      ArrayBuffer::New(isolate, std::move(backing_store));
+  Local<v8::ArrayBuffer> buffer = ArrayBuffer::New(isolate, length);
+  memcpy(buffer->GetBackingStore()->Data(), data, length);
+  delete[] data;
 
   args.GetReturnValue().Set(buffer);
 }
@@ -3841,6 +3864,7 @@ SourceGroup::IsolateThread::IsolateThread(SourceGroup* group)
 void SourceGroup::ExecuteInThread() {
   Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = Shell::array_buffer_allocator;
+  create_params.experimental_attach_to_shared_isolate = Shell::shared_isolate;
   Isolate* isolate = Isolate::New(create_params);
   Shell::SetWaitUntilDone(isolate, false);
   D8Console console(isolate);
@@ -4075,6 +4099,7 @@ void Worker::ProcessMessages() {
 void Worker::ExecuteInThread() {
   Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = Shell::array_buffer_allocator;
+  create_params.experimental_attach_to_shared_isolate = Shell::shared_isolate;
   isolate_ = Isolate::New(create_params);
   {
     base::MutexGuard lock_guard(&worker_mutex_);
@@ -4254,6 +4279,9 @@ bool Shell::SetOptions(int argc, char* argv[]) {
     } else if (strcmp(argv[i], "--throws") == 0) {
       options.expected_to_throw = true;
       argv[i] = nullptr;
+    } else if (strcmp(argv[i], "--no-fail") == 0) {
+      options.no_fail = true;
+      argv[i] = nullptr;
     } else if (strncmp(argv[i], "--icu-data-file=", 16) == 0) {
       options.icu_data_file = argv[i] + 16;
       argv[i] = nullptr;
@@ -4342,6 +4370,9 @@ bool Shell::SetOptions(int argc, char* argv[]) {
     } else if (strncmp(argv[i], "--web-snapshot-config=", 22) == 0) {
       options.web_snapshot_config = argv[i] + 22;
       argv[i] = nullptr;
+    } else if (strncmp(argv[i], "--web-snapshot-output=", 22) == 0) {
+      options.web_snapshot_output = argv[i] + 22;
+      argv[i] = nullptr;
     } else if (strcmp(argv[i], "--experimental-d8-web-snapshot-api") == 0) {
       options.d8_web_snapshot_api = true;
       argv[i] = nullptr;
@@ -4359,8 +4390,9 @@ bool Shell::SetOptions(int argc, char* argv[]) {
       options.fuzzilli_coverage_statistics = true;
       argv[i] = nullptr;
 #endif
-    } else if (strcmp(argv[i], "--fuzzy-module-file-extensions") == 0) {
-      options.fuzzy_module_file_extensions = true;
+    } else if (strcmp(argv[i], "--no-fuzzy-module-file-extensions") == 0) {
+      DCHECK(options.fuzzy_module_file_extensions);
+      options.fuzzy_module_file_extensions = false;
       argv[i] = nullptr;
 #if defined(V8_ENABLE_SYSTEM_INSTRUMENTATION)
     } else if (strcmp(argv[i], "--enable-system-instrumentation") == 0) {
@@ -4383,6 +4415,9 @@ bool Shell::SetOptions(int argc, char* argv[]) {
       options.wasm_trap_handler = false;
       argv[i] = nullptr;
 #endif  // V8_ENABLE_WEBASSEMBLY
+    } else if (strcmp(argv[i], "--expose-fast-api") == 0) {
+      options.expose_fast_api = true;
+      argv[i] = nullptr;
     }
   }
 
@@ -4406,9 +4441,14 @@ bool Shell::SetOptions(int argc, char* argv[]) {
   options.mock_arraybuffer_allocator = i::FLAG_mock_arraybuffer_allocator;
   options.mock_arraybuffer_allocator_limit =
       i::FLAG_mock_arraybuffer_allocator_limit;
-#if V8_OS_LINUX
+#if MULTI_MAPPED_ALLOCATOR_AVAILABLE
   options.multi_mapped_mock_allocator = i::FLAG_multi_mapped_mock_allocator;
 #endif
+
+  if (i::FLAG_stress_snapshot && options.expose_fast_api &&
+      check_d8_flag_contradictions) {
+    FATAL("Flag --expose-fast-api is incompatible with --stress-snapshot.");
+  }
 
   // Set up isolated source groups.
   options.isolate_sources = new SourceGroup[options.num_isolates];
@@ -4503,7 +4543,8 @@ int Shell::RunMain(Isolate* isolate, bool last_run) {
     Shell::unhandled_promise_rejections_.store(0);
   }
   // In order to finish successfully, success must be != expected_to_throw.
-  return success == Shell::options.expected_to_throw ? 1 : 0;
+  if (Shell::options.no_fail) return 0;
+  return (success == Shell::options.expected_to_throw ? 1 : 0);
 }
 
 void Shell::CollectGarbage(Isolate* isolate) {
@@ -4951,6 +4992,12 @@ void Shell::WaitForRunningWorkers() {
   allow_new_workers_ = true;
 }
 
+namespace {
+
+bool HasFlagThatRequiresSharedIsolate() { return i::FLAG_shared_string_table; }
+
+}  // namespace
+
 int Shell::Main(int argc, char* argv[]) {
   v8::base::EnsureConsoleOutput();
   if (!SetOptions(argc, argv)) return 1;
@@ -5021,7 +5068,7 @@ int Shell::Main(int argc, char* argv[]) {
       options.thread_pool_size, v8::platform::IdleTaskSupport::kEnabled,
       in_process_stack_dumping, std::move(tracing));
   g_default_platform = g_platform.get();
-  if (i::FLAG_verify_predictable) {
+  if (i::FLAG_predictable) {
     g_platform = MakePredictablePlatform(std::move(g_platform));
   }
   if (options.stress_delay_tasks) {
@@ -5039,6 +5086,11 @@ int Shell::Main(int argc, char* argv[]) {
     V8::SetFlagsFromString("--redirect-code-traces-to=code.asm");
   }
   v8::V8::InitializePlatform(g_platform.get());
+#ifdef V8_VIRTUAL_MEMORY_CAGE
+  if (!v8::V8::InitializeVirtualMemoryCage()) {
+    FATAL("Could not initialize the virtual memory cage");
+  }
+#endif
   v8::V8::Initialize();
   if (options.snapshot_blob) {
     v8::V8::InitializeExternalStartupDataFromFile(options.snapshot_blob);
@@ -5055,19 +5107,19 @@ int Shell::Main(int argc, char* argv[]) {
       memory_limit >= options.mock_arraybuffer_allocator_limit
           ? memory_limit
           : std::numeric_limits<size_t>::max());
-#if V8_OS_LINUX
+#if MULTI_MAPPED_ALLOCATOR_AVAILABLE
   MultiMappedAllocator multi_mapped_mock_allocator;
-#endif  // V8_OS_LINUX
+#endif
   if (options.mock_arraybuffer_allocator) {
     if (memory_limit) {
       Shell::array_buffer_allocator = &mock_arraybuffer_allocator_with_limit;
     } else {
       Shell::array_buffer_allocator = &mock_arraybuffer_allocator;
     }
-#if V8_OS_LINUX
+#if MULTI_MAPPED_ALLOCATOR_AVAILABLE
   } else if (options.multi_mapped_mock_allocator) {
     Shell::array_buffer_allocator = &multi_mapped_mock_allocator;
-#endif  // V8_OS_LINUX
+#endif
   } else {
     Shell::array_buffer_allocator = &shell_array_buffer_allocator;
   }
@@ -5095,6 +5147,14 @@ int Shell::Main(int argc, char* argv[]) {
     }
   }
 #endif  // V8_ENABLE_WEBASSEMBLY
+
+  if (HasFlagThatRequiresSharedIsolate()) {
+    Isolate::CreateParams shared_create_params;
+    shared_create_params.array_buffer_allocator = Shell::array_buffer_allocator;
+    shared_isolate =
+        reinterpret_cast<Isolate*>(i::Isolate::NewShared(create_params));
+    create_params.experimental_attach_to_shared_isolate = shared_isolate;
+  }
 
   Isolate* isolate = Isolate::New(create_params);
 
@@ -5167,15 +5227,17 @@ int Shell::Main(int argc, char* argv[]) {
                  ShellOptions::CodeCacheOptions::kNoProduceCache) {
         printf("============ Run: Produce code cache ============\n");
         // First run to produce the cache
-        Isolate::CreateParams create_params;
-        create_params.array_buffer_allocator = Shell::array_buffer_allocator;
+        Isolate::CreateParams create_params2;
+        create_params2.array_buffer_allocator = Shell::array_buffer_allocator;
+        create_params2.experimental_attach_to_shared_isolate =
+            Shell::shared_isolate;
         i::FLAG_hash_seed ^= 1337;  // Use a different hash seed.
-        Isolate* isolate2 = Isolate::New(create_params);
+        Isolate* isolate2 = Isolate::New(create_params2);
         i::FLAG_hash_seed ^= 1337;  // Restore old hash seed.
         {
-          D8Console console(isolate2);
-          Initialize(isolate2, &console);
-          PerIsolateData data(isolate2);
+          D8Console console2(isolate2);
+          Initialize(isolate2, &console2);
+          PerIsolateData data2(isolate2);
           Isolate::Scope isolate_scope(isolate2);
 
           result = RunMain(isolate2, false);

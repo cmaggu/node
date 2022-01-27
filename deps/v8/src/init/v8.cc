@@ -24,6 +24,7 @@
 #include "src/objects/elements.h"
 #include "src/objects/objects-inl.h"
 #include "src/profiler/heap-profiler.h"
+#include "src/security/vm-cage.h"
 #include "src/snapshot/snapshot.h"
 #include "src/tracing/tracing-category-observer.h"
 
@@ -73,6 +74,17 @@ void V8::TearDown() {
   }
 
 void V8::InitializeOncePerProcessImpl() {
+  CHECK(platform_);
+
+#ifdef V8_VIRTUAL_MEMORY_CAGE
+  if (!GetProcessWideVirtualMemoryCage()->is_initialized()) {
+    // For now, we still allow the cage to be disabled even if V8 was compiled
+    // with V8_VIRTUAL_MEMORY_CAGE. This will eventually be forbidden.
+    CHECK(kAllowBackingStoresOutsideCage);
+    GetProcessWideVirtualMemoryCage()->Disable();
+  }
+#endif
+
   // Update logging information before enforcing flag implications.
   bool* log_all_flags[] = {&FLAG_turbo_profiling_log_builtins,
                            &FLAG_log_all,
@@ -160,12 +172,6 @@ void V8::InitializeOncePerProcessImpl() {
     DISABLE_FLAG(trace_turbo_stack_accesses);
   }
 
-  if (FLAG_regexp_interpret_all && FLAG_regexp_tier_up) {
-    // Turning off the tier-up strategy, because the --regexp-interpret-all and
-    // --regexp-tier-up flags are incompatible.
-    DISABLE_FLAG(regexp_tier_up);
-  }
-
   // The --jitless and --interpreted-frames-native-stack flags are incompatible
   // since the latter requires code generation while the former prohibits code
   // generation.
@@ -174,6 +180,11 @@ void V8::InitializeOncePerProcessImpl() {
   base::OS::Initialize(FLAG_hard_abort, FLAG_gc_fake_mmap);
 
   if (FLAG_random_seed) SetRandomMmapSeed(FLAG_random_seed);
+
+  if (FLAG_print_flag_values) FlagList::PrintValues();
+
+  // Initialize the default FlagList::Hash
+  FlagList::Hash();
 
 #if defined(V8_USE_PERFETTO)
   if (perfetto::Tracing::IsInitialized()) TrackEvent::Register();
@@ -213,6 +224,15 @@ void V8::InitializePlatform(v8::Platform* platform) {
 #endif
 }
 
+#ifdef V8_VIRTUAL_MEMORY_CAGE
+bool V8::InitializeVirtualMemoryCage() {
+  // Platform must have been initialized already.
+  CHECK(platform_);
+  v8::PageAllocator* page_allocator = GetPlatformPageAllocator();
+  return GetProcessWideVirtualMemoryCage()->Initialize(page_allocator);
+}
+#endif
+
 void V8::ShutdownPlatform() {
   CHECK(platform_);
 #if defined(V8_OS_WIN) && defined(V8_ENABLE_SYSTEM_INSTRUMENTATION)
@@ -222,6 +242,13 @@ void V8::ShutdownPlatform() {
 #endif
   v8::tracing::TracingCategoryObserver::TearDown();
   v8::base::SetPrintStackTrace(nullptr);
+
+#ifdef V8_VIRTUAL_MEMORY_CAGE
+  // TODO(chromium:1218005) alternatively, this could move to its own
+  // public TearDownVirtualMemoryCage function.
+  GetProcessWideVirtualMemoryCage()->TearDown();
+#endif
+
   platform_ = nullptr;
 }
 

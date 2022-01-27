@@ -9,7 +9,7 @@
 #include "src/ast/ast.h"
 #include "src/base/logging.h"
 #include "src/common/globals.h"
-#include "src/compiler-dispatcher/compiler-dispatcher.h"
+#include "src/compiler-dispatcher/lazy-compile-dispatcher.h"
 #include "src/heap/heap-inl.h"
 #include "src/logging/counters.h"
 #include "src/logging/log.h"
@@ -26,7 +26,8 @@ UnoptimizedCompileFlags::UnoptimizedCompileFlags(Isolate* isolate,
     : flags_(0),
       script_id_(script_id),
       function_kind_(FunctionKind::kNormalFunction),
-      function_syntax_kind_(FunctionSyntaxKind::kDeclaration) {
+      function_syntax_kind_(FunctionSyntaxKind::kDeclaration),
+      parsing_while_debugging_(ParsingWhileDebugging::kNo) {
   set_collect_type_profile(isolate->is_collecting_type_profile());
   set_coverage_enabled(!isolate->is_best_effort_code_coverage());
   set_block_coverage_enabled(isolate->is_block_code_coverage());
@@ -168,9 +169,10 @@ UnoptimizedCompileState::UnoptimizedCompileState(Isolate* isolate)
       allocator_(isolate->allocator()),
       ast_string_constants_(isolate->ast_string_constants()),
       logger_(isolate->logger()),
-      parallel_tasks_(isolate->compiler_dispatcher()->IsEnabled()
-                          ? new ParallelTasks(isolate->compiler_dispatcher())
-                          : nullptr) {}
+      parallel_tasks_(
+          isolate->lazy_compile_dispatcher()
+              ? new ParallelTasks(isolate->lazy_compile_dispatcher())
+              : nullptr) {}
 
 UnoptimizedCompileState::UnoptimizedCompileState(
     const UnoptimizedCompileState& other) V8_NOEXCEPT
@@ -332,7 +334,7 @@ void ParseInfo::CheckFlagsForFunctionFromScript(Script script) {
 void UnoptimizedCompileState::ParallelTasks::Enqueue(
     ParseInfo* outer_parse_info, const AstRawString* function_name,
     FunctionLiteral* literal) {
-  base::Optional<CompilerDispatcher::JobId> job_id =
+  base::Optional<LazyCompileDispatcher::JobId> job_id =
       dispatcher_->Enqueue(outer_parse_info, function_name, literal);
   if (job_id) {
     enqueued_jobs_.emplace_front(std::make_pair(literal, *job_id));

@@ -142,6 +142,10 @@ void ContextSerializer::SerializeObjectImpl(Handle<HeapObject> obj) {
     return;
   }
 
+  if (startup_serializer_->SerializeUsingSharedHeapObjectCache(&sink_, obj)) {
+    return;
+  }
+
   if (ShouldBeInTheStartupObjectCache(*obj)) {
     startup_serializer_->SerializeUsingStartupObjectCache(&sink_, obj);
     return;
@@ -152,7 +156,7 @@ void ContextSerializer::SerializeObjectImpl(Handle<HeapObject> obj) {
   // If this is not the case you may have to add something to the root array.
   DCHECK(!startup_serializer_->ReferenceMapContains(obj));
   // All the internalized strings that the context snapshot needs should be
-  // either in the root table or in the startup object cache.
+  // either in the root table or in the shared heap object cache.
   DCHECK(!obj->IsInternalizedString());
   // Function and object templates are not context specific.
   DCHECK(!obj->IsTemplateInfo());
@@ -175,10 +179,10 @@ void ContextSerializer::SerializeObjectImpl(Handle<HeapObject> obj) {
     // Unconditionally reset the JSFunction to its SFI's code, since we can't
     // serialize optimized code anyway.
     Handle<JSFunction> closure = Handle<JSFunction>::cast(obj);
-    closure->ResetIfBytecodeFlushed();
+    closure->ResetIfCodeFlushed();
     if (closure->is_compiled()) {
-      if (closure->shared().HasBaselineData()) {
-        closure->shared().flush_baseline_data();
+      if (closure->shared().HasBaselineCode()) {
+        closure->shared().FlushBaselineCode();
       }
       closure->set_code(closure->shared().GetCode(), kReleaseStore);
     }
@@ -202,6 +206,12 @@ bool ContextSerializer::ShouldBeInTheStartupObjectCache(HeapObject o) {
          o.IsCode() || o.IsScopeInfo() || o.IsAccessorInfo() ||
          o.IsTemplateInfo() || o.IsClassPositions() ||
          o.map() == ReadOnlyRoots(isolate()).fixed_cow_array_map();
+}
+
+bool ContextSerializer::ShouldBeInTheSharedObjectCache(HeapObject o) {
+  // FLAG_shared_string_table may be true during deserialization, so put
+  // internalized strings into the shared object snapshot.
+  return o.IsInternalizedString();
 }
 
 namespace {

@@ -15,9 +15,15 @@
 #endif  // MINGW_HAS_SECURE_API
 #endif  // __MINGW32__
 
-#include <limits>
+#include <windows.h>
 
-#include "src/base/win32-headers.h"
+// This has to come after windows.h.
+#include <VersionHelpers.h>
+#include <dbghelp.h>   // For SymLoadModule64 and al.
+#include <mmsystem.h>  // For timeGetTime().
+#include <tlhelp32.h>  // For Module32First and al.
+
+#include <limits>
 
 #include "src/base/bits.h"
 #include "src/base/lazy-instance.h"
@@ -26,12 +32,33 @@
 #include "src/base/platform/time.h"
 #include "src/base/timezone-cache.h"
 #include "src/base/utils/random-number-generator.h"
-
-#include <VersionHelpers.h>
+#include "src/base/win32-headers.h"
 
 #if defined(_MSC_VER)
 #include <crtdbg.h>
 #endif               // defined(_MSC_VER)
+
+// Check that type sizes and alignments match.
+STATIC_ASSERT(sizeof(V8_CONDITION_VARIABLE) == sizeof(CONDITION_VARIABLE));
+STATIC_ASSERT(alignof(V8_CONDITION_VARIABLE) == alignof(CONDITION_VARIABLE));
+STATIC_ASSERT(sizeof(V8_SRWLOCK) == sizeof(SRWLOCK));
+STATIC_ASSERT(alignof(V8_SRWLOCK) == alignof(SRWLOCK));
+STATIC_ASSERT(sizeof(V8_CRITICAL_SECTION) == sizeof(CRITICAL_SECTION));
+STATIC_ASSERT(alignof(V8_CRITICAL_SECTION) == alignof(CRITICAL_SECTION));
+
+// Check that CRITICAL_SECTION offsets match.
+STATIC_ASSERT(offsetof(V8_CRITICAL_SECTION, DebugInfo) ==
+              offsetof(CRITICAL_SECTION, DebugInfo));
+STATIC_ASSERT(offsetof(V8_CRITICAL_SECTION, LockCount) ==
+              offsetof(CRITICAL_SECTION, LockCount));
+STATIC_ASSERT(offsetof(V8_CRITICAL_SECTION, RecursionCount) ==
+              offsetof(CRITICAL_SECTION, RecursionCount));
+STATIC_ASSERT(offsetof(V8_CRITICAL_SECTION, OwningThread) ==
+              offsetof(CRITICAL_SECTION, OwningThread));
+STATIC_ASSERT(offsetof(V8_CRITICAL_SECTION, LockSemaphore) ==
+              offsetof(CRITICAL_SECTION, LockSemaphore));
+STATIC_ASSERT(offsetof(V8_CRITICAL_SECTION, SpinCount) ==
+              offsetof(CRITICAL_SECTION, SpinCount));
 
 // Extra functions for MinGW. Most of these are the _s functions which are in
 // the Microsoft Visual Studio C++ CRT.
@@ -908,6 +935,21 @@ bool OS::DiscardSystemPages(void* address, size_t size) {
 }
 
 // static
+bool OS::DecommitPages(void* address, size_t size) {
+  DCHECK_EQ(0, reinterpret_cast<uintptr_t>(address) % CommitPageSize());
+  DCHECK_EQ(0, size % CommitPageSize());
+  // https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualfree:
+  // "If a page is decommitted but not released, its state changes to reserved.
+  // Subsequently, you can call VirtualAlloc to commit it, or VirtualFree to
+  // release it. Attempts to read from or write to a reserved page results in an
+  // access violation exception."
+  // https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
+  // for MEM_COMMIT: "The function also guarantees that when the caller later
+  // initially accesses the memory, the contents will be zero."
+  return VirtualFree(address, size, MEM_DECOMMIT) != 0;
+}
+
+// static
 bool OS::HasLazyCommits() {
   // TODO(alph): implement for the platform.
   return false;
@@ -1397,6 +1439,44 @@ void Thread::SetThreadLocal(LocalStorageKey key, void* value) {
 }
 
 void OS::AdjustSchedulingParams() {}
+
+std::vector<OS::MemoryRange> OS::GetFreeMemoryRangesWithin(
+    OS::Address boundary_start, OS::Address boundary_end, size_t minimum_size,
+    size_t alignment) {
+  std::vector<OS::MemoryRange> result = {};
+
+  // Search for the virtual memory (vm) ranges within the boundary.
+  // If a range is free and larger than {minimum_size}, then push it to the
+  // returned vector.
+  uintptr_t vm_start = RoundUp(boundary_start, alignment);
+  uintptr_t vm_end = 0;
+  MEMORY_BASIC_INFORMATION mi;
+  // This loop will terminate once the scanning reaches the higher address
+  // to the end of boundary or the function VirtualQuery fails.
+  while (vm_start < boundary_end &&
+         VirtualQuery(reinterpret_cast<LPCVOID>(vm_start), &mi, sizeof(mi)) !=
+             0) {
+    vm_start = reinterpret_cast<uintptr_t>(mi.BaseAddress);
+    vm_end = vm_start + mi.RegionSize;
+    if (mi.State == MEM_FREE) {
+      // The available area is the overlap of the virtual memory range and
+      // boundary. Push the overlapped memory range to the vector if there is
+      // enough space.
+      const uintptr_t overlap_start =
+          RoundUp(std::max(vm_start, boundary_start), alignment);
+      const uintptr_t overlap_end =
+          RoundDown(std::min(vm_end, boundary_end), alignment);
+      if (overlap_start < overlap_end &&
+          overlap_end - overlap_start >= minimum_size) {
+        result.push_back({overlap_start, overlap_end});
+      }
+    }
+    // Continue to visit the next virtual memory range.
+    vm_start = vm_end;
+  }
+
+  return result;
+}
 
 // static
 Stack::StackSlot Stack::GetStackStart() {

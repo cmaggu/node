@@ -48,13 +48,20 @@ Handle<Context> ScriptContextTable::GetContext(Isolate* isolate,
 
 Context ScriptContextTable::get_context(int i) const {
   DCHECK_LT(i, used(kAcquireLoad));
-  return Context::cast(this->get(i + kFirstContextSlotIndex));
+  return Context::cast(get(i + kFirstContextSlotIndex));
+}
+
+Context ScriptContextTable::get_context(int i, AcquireLoadTag tag) const {
+  DCHECK_LT(i, used(kAcquireLoad));
+  return Context::cast(get(i + kFirstContextSlotIndex, tag));
 }
 
 TQ_OBJECT_CONSTRUCTORS_IMPL(Context)
 NEVER_READ_ONLY_SPACE_IMPL(Context)
 
 CAST_ACCESSOR(NativeContext)
+
+RELAXED_SMI_ACCESSORS(Context, length, kLengthOffset)
 
 Object Context::get(int index) const {
   PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
@@ -63,14 +70,14 @@ Object Context::get(int index) const {
 
 Object Context::get(PtrComprCageBase cage_base, int index) const {
   DCHECK_LT(static_cast<unsigned int>(index),
-            static_cast<unsigned int>(length()));
+            static_cast<unsigned int>(length(kRelaxedLoad)));
   return TaggedField<Object>::Relaxed_Load(cage_base, *this,
                                            OffsetOfElementAt(index));
 }
 
 void Context::set(int index, Object value, WriteBarrierMode mode) {
   DCHECK_LT(static_cast<unsigned int>(index),
-            static_cast<unsigned int>(length()));
+            static_cast<unsigned int>(length(kRelaxedLoad)));
   const int offset = OffsetOfElementAt(index);
   RELAXED_WRITE_FIELD(*this, offset, value);
   CONDITIONAL_WRITE_BARRIER(*this, offset, value, mode);
@@ -84,14 +91,14 @@ Object Context::get(int index, AcquireLoadTag tag) const {
 Object Context::get(PtrComprCageBase cage_base, int index,
                     AcquireLoadTag) const {
   DCHECK_LT(static_cast<unsigned int>(index),
-            static_cast<unsigned int>(length()));
+            static_cast<unsigned int>(length(kRelaxedLoad)));
   return ACQUIRE_READ_FIELD(*this, OffsetOfElementAt(index));
 }
 
 void Context::set(int index, Object value, WriteBarrierMode mode,
                   ReleaseStoreTag) {
   DCHECK_LT(static_cast<unsigned int>(index),
-            static_cast<unsigned int>(length()));
+            static_cast<unsigned int>(length(kRelaxedLoad)));
   const int offset = OffsetOfElementAt(index);
   RELEASE_WRITE_FIELD(*this, offset, value);
   CONDITIONAL_WRITE_BARRIER(*this, offset, value, mode);
@@ -106,9 +113,9 @@ void Context::set_scope_info(ScopeInfo scope_info, WriteBarrierMode mode) {
   set(SCOPE_INFO_INDEX, scope_info, mode);
 }
 
-Object Context::unchecked_previous() { return get(PREVIOUS_INDEX); }
+Object Context::unchecked_previous() const { return get(PREVIOUS_INDEX); }
 
-Context Context::previous() {
+Context Context::previous() const {
   Object result = get(PREVIOUS_INDEX);
   DCHECK(IsBootstrappingOrValidParentContext(result, *this));
   return Context::unchecked_cast(result);
@@ -117,20 +124,21 @@ void Context::set_previous(Context context, WriteBarrierMode mode) {
   set(PREVIOUS_INDEX, context, mode);
 }
 
-Object Context::next_context_link() { return get(Context::NEXT_CONTEXT_LINK); }
+ScopeInfo Context::scope_info() const {
+  return ScopeInfo::cast(get(SCOPE_INFO_INDEX));
+}
 
-bool Context::has_extension() {
+Object Context::next_context_link() const {
+  return get(Context::NEXT_CONTEXT_LINK);
+}
+
+bool Context::has_extension() const {
   return scope_info().HasContextExtensionSlot() && !extension().IsUndefined();
 }
 
-HeapObject Context::extension() {
+HeapObject Context::extension() const {
   DCHECK(scope_info().HasContextExtensionSlot());
   return HeapObject::cast(get(EXTENSION_INDEX));
-}
-
-void Context::set_extension(HeapObject object, WriteBarrierMode mode) {
-  DCHECK(scope_info().HasContextExtensionSlot());
-  set(EXTENSION_INDEX, object, mode);
 }
 
 NativeContext Context::native_context() const {

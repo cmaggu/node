@@ -7,6 +7,11 @@
 
 #include <memory>
 
+#include "include/v8-container.h"
+#include "include/v8-external.h"
+#include "include/v8-proxy.h"
+#include "include/v8-typed-array.h"
+#include "include/v8-wasm.h"
 #include "src/execution/isolate.h"
 #include "src/heap/factory.h"
 #include "src/objects/bigint.h"
@@ -18,11 +23,15 @@
 #include "src/objects/objects.h"
 #include "src/objects/shared-function-info.h"
 #include "src/objects/source-text-module.h"
+#include "src/objects/templates.h"
 #include "src/utils/detachable-vector.h"
 
-#include "src/objects/templates.h"
-
 namespace v8 {
+
+class AccessorSignature;
+class Extension;
+class Signature;
+class Template;
 
 namespace internal {
 class JSArrayBufferView;
@@ -33,7 +42,7 @@ namespace debug {
 class AccessorPair;
 class GeneratorObject;
 class Script;
-class WeakMap;
+class EphemeronTable;
 }  // namespace debug
 
 // Constants used in the implementation of the API.  The most natural thing
@@ -126,13 +135,13 @@ class RegisteredExtension {
   V(Proxy, JSProxy)                            \
   V(debug::GeneratorObject, JSGeneratorObject) \
   V(debug::Script, Script)                     \
-  V(debug::WeakMap, JSWeakMap)                 \
+  V(debug::EphemeronTable, EphemeronHashTable) \
   V(debug::AccessorPair, AccessorPair)         \
   V(Promise, JSPromise)                        \
   V(Primitive, Object)                         \
   V(PrimitiveArray, FixedArray)                \
   V(BigInt, BigInt)                            \
-  V(ScriptOrModule, Script)                    \
+  V(ScriptOrModule, ScriptOrModule)            \
   V(FixedArray, FixedArray)                    \
   V(ModuleRequest, ModuleRequest)              \
   IF_WASM(V, WasmMemoryObject, WasmMemoryObject)
@@ -245,8 +254,8 @@ class Utils {
       v8::internal::Handle<v8::internal::FixedArray> obj);
   static inline Local<PrimitiveArray> PrimitiveArrayToLocal(
       v8::internal::Handle<v8::internal::FixedArray> obj);
-  static inline Local<ScriptOrModule> ScriptOrModuleToLocal(
-      v8::internal::Handle<v8::internal::Script> obj);
+  static inline Local<ScriptOrModule> ToLocal(
+      v8::internal::Handle<v8::internal::ScriptOrModule> obj);
 
 #define DECLARE_OPEN_HANDLE(From, To)                              \
   static inline v8::internal::Handle<v8::internal::To> OpenHandle( \

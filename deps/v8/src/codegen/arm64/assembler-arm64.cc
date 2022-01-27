@@ -2627,7 +2627,7 @@ void Assembler::fmov(const VRegister& vd, float imm) {
     DCHECK(vd.Is1S());
     Emit(FMOV_s_imm | Rd(vd) | ImmFP(imm));
   } else {
-    DCHECK(vd.Is2S() | vd.Is4S());
+    DCHECK(vd.Is2S() || vd.Is4S());
     Instr op = NEONModifiedImmediate_MOVI;
     Instr q = vd.Is4S() ? NEON_Q : 0;
     Emit(q | op | ImmNEONFP(imm) | NEONCmode(0xF) | Rd(vd));
@@ -4276,8 +4276,6 @@ bool Assembler::IsImmFP64(double imm) {
 }
 
 void Assembler::GrowBuffer() {
-  bool previously_on_heap = buffer_->IsOnHeap();
-
   // Compute new buffer size.
   int old_size = buffer_->size();
   int new_size = std::min(2 * old_size, old_size + 1 * MB);
@@ -4320,21 +4318,6 @@ void Assembler::GrowBuffer() {
     WriteUnalignedValue<intptr_t>(address, internal_ref);
   }
 
-  // Patch on-heap references to handles.
-  if (previously_on_heap && !buffer_->IsOnHeap()) {
-    Address base = reinterpret_cast<Address>(buffer_->start());
-    for (auto p : saved_handles_for_raw_object_ptr_) {
-      WriteUnalignedValue(base + p.first, p.second);
-    }
-    for (auto p : saved_offsets_for_runtime_entries_) {
-      Instruction* instr = reinterpret_cast<Instruction*>(base + p.first);
-      DCHECK(is_int26(p.second));
-      DCHECK(instr->IsBranchAndLink() || instr->IsUnconditionalBranch());
-      instr->SetInstructionBits(instr->Mask(UnconditionalBranchMask) |
-                                p.second);
-    }
-  }
-
   // Pending relocation entries are also relative, no need to relocate.
 }
 
@@ -4345,12 +4328,16 @@ void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data,
       (rmode == RelocInfo::CONST_POOL) || (rmode == RelocInfo::VENEER_POOL) ||
       (rmode == RelocInfo::DEOPT_SCRIPT_OFFSET) ||
       (rmode == RelocInfo::DEOPT_INLINING_ID) ||
-      (rmode == RelocInfo::DEOPT_REASON) || (rmode == RelocInfo::DEOPT_ID)) {
+      (rmode == RelocInfo::DEOPT_REASON) || (rmode == RelocInfo::DEOPT_ID) ||
+      (rmode == RelocInfo::LITERAL_CONSTANT) ||
+      (rmode == RelocInfo::DEOPT_NODE_ID)) {
     // Adjust code for new modes.
     DCHECK(RelocInfo::IsDeoptReason(rmode) || RelocInfo::IsDeoptId(rmode) ||
+           RelocInfo::IsDeoptNodeId(rmode) ||
            RelocInfo::IsDeoptPosition(rmode) ||
            RelocInfo::IsInternalReference(rmode) ||
            RelocInfo::IsDataEmbeddedObject(rmode) ||
+           RelocInfo::IsLiteralConstant(rmode) ||
            RelocInfo::IsConstPool(rmode) || RelocInfo::IsVeneerPool(rmode));
     // These modes do not need an entry in the constant pool.
   } else if (constant_pool_mode == NEEDS_POOL_ENTRY) {

@@ -19,6 +19,7 @@
 #include "src/objects/debug-objects.h"
 #include "src/parsing/parse-info.h"
 #include "src/parsing/pending-compilation-error-handler.h"
+#include "src/snapshot/code-serializer.h"
 #include "src/utils/allocation.h"
 #include "src/zone/zone.h"
 
@@ -26,6 +27,7 @@ namespace v8 {
 namespace internal {
 
 // Forward declarations.
+class AlignedCachedData;
 class AstRawString;
 class BackgroundCompileTask;
 class IsCompiledScope;
@@ -35,12 +37,12 @@ class OptimizedCompilationJob;
 class ParseInfo;
 class Parser;
 class RuntimeCallStats;
-class ScriptData;
-struct ScriptStreamingData;
 class TimedHistogram;
 class UnoptimizedCompilationInfo;
 class UnoptimizedCompilationJob;
 class WorkerThreadRuntimeCallStats;
+struct ScriptDetails;
+struct ScriptStreamingData;
 
 using UnoptimizedCompilationJobList =
     std::forward_list<std::unique_ptr<UnoptimizedCompilationJob>>;
@@ -86,8 +88,9 @@ class V8_EXPORT_PRIVATE Compiler : public AllStatic {
 
   static void LogFunctionCompilation(Isolate* isolate,
                                      CodeEventListener::LogEventsAndTags tag,
-                                     Handle<SharedFunctionInfo> shared,
                                      Handle<Script> script,
+                                     Handle<SharedFunctionInfo> shared,
+                                     Handle<FeedbackVector> feedback_vector,
                                      Handle<AbstractCode> abstract_code,
                                      CodeKind kind, double time_taken_ms);
   // Collect source positions for a function that has already been compiled to
@@ -128,31 +131,16 @@ class V8_EXPORT_PRIVATE Compiler : public AllStatic {
       Handle<String> source, Handle<SharedFunctionInfo> outer_info,
       Handle<Context> context, LanguageMode language_mode,
       ParseRestriction restriction, int parameters_end_pos,
-      int eval_scope_position, int eval_position);
-
-  struct ScriptDetails {
-    ScriptDetails()
-        : line_offset(0), column_offset(0), repl_mode(REPLMode::kNo) {}
-    explicit ScriptDetails(Handle<Object> script_name)
-        : line_offset(0),
-          column_offset(0),
-          name_obj(script_name),
-          repl_mode(REPLMode::kNo) {}
-
-    int line_offset;
-    int column_offset;
-    i::MaybeHandle<i::Object> name_obj;
-    i::MaybeHandle<i::Object> source_map_url;
-    i::MaybeHandle<i::FixedArray> host_defined_options;
-    REPLMode repl_mode;
-  };
+      int eval_scope_position, int eval_position,
+      ParsingWhileDebugging parsing_while_debugging =
+          ParsingWhileDebugging::kNo);
 
   // Create a function that results from wrapping |source| in a function,
   // with |arguments| being a list of parameters for that function.
   V8_WARN_UNUSED_RESULT static MaybeHandle<JSFunction> GetWrappedFunction(
       Handle<String> source, Handle<FixedArray> arguments,
       Handle<Context> context, const ScriptDetails& script_details,
-      ScriptOriginOptions origin_options, ScriptData* cached_data,
+      AlignedCachedData* cached_data,
       v8::ScriptCompiler::CompileOptions compile_options,
       v8::ScriptCompiler::NoCacheReason no_cache_reason);
 
@@ -176,8 +164,39 @@ class V8_EXPORT_PRIVATE Compiler : public AllStatic {
   // Create a shared function info object for a String source.
   static MaybeHandle<SharedFunctionInfo> GetSharedFunctionInfoForScript(
       Isolate* isolate, Handle<String> source,
-      const ScriptDetails& script_details, ScriptOriginOptions origin_options,
-      v8::Extension* extension, ScriptData* cached_data,
+      const ScriptDetails& script_details,
+      ScriptCompiler::CompileOptions compile_options,
+      ScriptCompiler::NoCacheReason no_cache_reason,
+      NativesFlag is_natives_code);
+
+  // Create a shared function info object for a String source.
+  static MaybeHandle<SharedFunctionInfo>
+  GetSharedFunctionInfoForScriptWithExtension(
+      Isolate* isolate, Handle<String> source,
+      const ScriptDetails& script_details, v8::Extension* extension,
+      ScriptCompiler::CompileOptions compile_options,
+      NativesFlag is_natives_code);
+
+  // Create a shared function info object for a String source and serialized
+  // cached data. The cached data may be rejected, in which case this function
+  // will set cached_data->rejected() to true.
+  static MaybeHandle<SharedFunctionInfo>
+  GetSharedFunctionInfoForScriptWithCachedData(
+      Isolate* isolate, Handle<String> source,
+      const ScriptDetails& script_details, AlignedCachedData* cached_data,
+      ScriptCompiler::CompileOptions compile_options,
+      ScriptCompiler::NoCacheReason no_cache_reason,
+      NativesFlag is_natives_code);
+
+  // Create a shared function info object for a String source and a task that
+  // has deserialized cached data on a background thread. The cached data from
+  // the task may be rejected, in which case this function will set
+  // deserialize_task->rejected() to true.
+  static MaybeHandle<SharedFunctionInfo>
+  GetSharedFunctionInfoForScriptWithDeserializeTask(
+      Isolate* isolate, Handle<String> source,
+      const ScriptDetails& script_details,
+      BackgroundDeserializeTask* deserialize_task,
       ScriptCompiler::CompileOptions compile_options,
       ScriptCompiler::NoCacheReason no_cache_reason,
       NativesFlag is_natives_code);
@@ -189,8 +208,10 @@ class V8_EXPORT_PRIVATE Compiler : public AllStatic {
   // owned by the caller.
   static MaybeHandle<SharedFunctionInfo> GetSharedFunctionInfoForStreamedScript(
       Isolate* isolate, Handle<String> source,
-      const ScriptDetails& script_details, ScriptOriginOptions origin_options,
-      ScriptStreamingData* streaming_data);
+      const ScriptDetails& script_details, ScriptStreamingData* streaming_data);
+
+  static Handle<SharedFunctionInfo> GetSharedFunctionInfoForWebSnapshot(
+      Isolate* isolate, Handle<String> source);
 
   // Create a shared function info object for the given function literal
   // node (the code may be lazily compiled).
@@ -510,6 +531,11 @@ class V8_EXPORT_PRIVATE BackgroundCompileTask {
     return &finalize_unoptimized_compilation_data_;
   }
 
+  int use_count(v8::Isolate::UseCounterFeature feature) const {
+    return use_counts_[static_cast<int>(feature)];
+  }
+  int total_preparse_skipped() const { return total_preparse_skipped_; }
+
   // Jobs which could not be finalized in the background task, and need to be
   // finalized on the main thread.
   DeferredFinalizationJobDataList* jobs_to_retry_finalization_on_main_thread() {
@@ -544,6 +570,8 @@ class V8_EXPORT_PRIVATE BackgroundCompileTask {
   IsCompiledScope is_compiled_scope_;
   FinalizeUnoptimizedCompilationDataList finalize_unoptimized_compilation_data_;
   DeferredFinalizationJobDataList jobs_to_retry_finalization_on_main_thread_;
+  int use_counts_[v8::Isolate::kUseCounterFeatureCount] = {0};
+  int total_preparse_skipped_ = 0;
 
   // Single function data for top-level function compilation.
   int start_position_;
@@ -574,6 +602,25 @@ struct ScriptStreamingData {
 
   // Task that performs background parsing and compilation.
   std::unique_ptr<BackgroundCompileTask> task;
+};
+
+class V8_EXPORT_PRIVATE BackgroundDeserializeTask {
+ public:
+  BackgroundDeserializeTask(Isolate* isolate,
+                            std::unique_ptr<ScriptCompiler::CachedData> data);
+
+  void Run();
+
+  MaybeHandle<SharedFunctionInfo> Finish(Isolate* isolate,
+                                         Handle<String> source,
+                                         ScriptOriginOptions origin_options);
+
+  bool rejected() const { return cached_data_.rejected(); }
+
+ private:
+  Isolate* isolate_for_local_isolate_;
+  AlignedCachedData cached_data_;
+  CodeSerializer::OffThreadDeserializeData off_thread_data_;
 };
 
 }  // namespace internal

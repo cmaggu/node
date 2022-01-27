@@ -1055,6 +1055,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
   void DataAlign(int m);
   // Aligns code to something that's optimal for a jump target for the platform.
   void CodeTargetAlign();
+  void LoopHeaderAlign() { CodeTargetAlign(); }
 
   void breakpoint(bool do_print) {
     if (do_print) {
@@ -1271,6 +1272,7 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
 
   // Load Address Instructions
   void larl(Register r, Label* l);
+  void lgrl(Register r, Label* l);
 
   // Exception-generating instructions and debugging support
   void stop(Condition cond = al, int32_t code = kDefaultStopCode,
@@ -1304,8 +1306,8 @@ class V8_EXPORT_PRIVATE Assembler : public AssemblerBase {
 
   // Record a deoptimization reason that can be used by a log or cpu profiler.
   // Use --trace-deopt to enable.
-  void RecordDeoptReason(DeoptimizeReason reason, SourcePosition position,
-                         int id);
+  void RecordDeoptReason(DeoptimizeReason reason, uint32_t node_id,
+                         SourcePosition position, int id);
 
   // Writes a single byte or word of data in the code stream.  Used
   // for inline tables, e.g., jump-tables.

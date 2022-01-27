@@ -106,7 +106,7 @@ namespace interpreter {
     OperandType::kIdx)                                                         \
   V(LdaGlobalInsideTypeof, ImplicitRegisterUse::kWriteAccumulator,             \
     OperandType::kIdx, OperandType::kIdx)                                      \
-  V(StaGlobal, ImplicitRegisterUse::kReadAccumulator, OperandType::kIdx,       \
+  V(StaGlobal, ImplicitRegisterUse::kReadWriteAccumulator, OperandType::kIdx,  \
     OperandType::kIdx)                                                         \
                                                                                \
   /* Context operations */                                                     \
@@ -150,6 +150,8 @@ namespace interpreter {
   V(StaNamedOwnProperty, ImplicitRegisterUse::kReadWriteAccumulator,           \
     OperandType::kReg, OperandType::kIdx, OperandType::kIdx)                   \
   V(StaKeyedProperty, ImplicitRegisterUse::kReadWriteAccumulator,              \
+    OperandType::kReg, OperandType::kReg, OperandType::kIdx)                   \
+  V(StaKeyedPropertyAsDefine, ImplicitRegisterUse::kReadWriteAccumulator,      \
     OperandType::kReg, OperandType::kReg, OperandType::kIdx)                   \
   V(StaInArrayLiteral, ImplicitRegisterUse::kReadWriteAccumulator,             \
     OperandType::kReg, OperandType::kReg, OperandType::kIdx)                   \
@@ -393,7 +395,7 @@ namespace interpreter {
                                                                                \
   /* Complex flow control For..in */                                           \
   V(ForInEnumerate, ImplicitRegisterUse::kWriteAccumulator, OperandType::kReg) \
-  V(ForInPrepare, ImplicitRegisterUse::kReadAccumulator,                       \
+  V(ForInPrepare, ImplicitRegisterUse::kReadWriteAccumulator,                  \
     OperandType::kRegOutTriple, OperandType::kIdx)                             \
   V(ForInContinue, ImplicitRegisterUse::kWriteAccumulator, OperandType::kReg,  \
     OperandType::kReg)                                                         \

@@ -77,11 +77,12 @@ class DiscardingFreeHandler : public FreeHandlerBase {
       : page_allocator_(page_allocator), free_list_(free_list), page_(page) {}
 
   void Free(FreeList::Block block) {
+    const auto unused_range = free_list_.AddReturningUnusedBounds(block);
     const uintptr_t aligned_begin_unused =
-        RoundUp(reinterpret_cast<uintptr_t>(free_list_.Add(block)),
+        RoundUp(reinterpret_cast<uintptr_t>(unused_range.first),
                 page_allocator_.CommitPageSize());
     const uintptr_t aligned_end_unused =
-        RoundDown(reinterpret_cast<uintptr_t>(block.address) + block.size,
+        RoundDown(reinterpret_cast<uintptr_t>(unused_range.second),
                   page_allocator_.CommitPageSize());
     if (aligned_begin_unused < aligned_end_unused) {
       const size_t discarded_size = aligned_end_unused - aligned_begin_unused;
@@ -575,15 +576,17 @@ class ConcurrentSweepTask final : public cppgc::JobTask,
       page.space().AddPage(&page);
       return true;
     }
-    if (!header->IsFinalizable()) {
-      LargePage::Destroy(&page);
-      return true;
+    std::vector<HeapObjectHeader*> unfinalized_objects;
+    if (header->IsFinalizable()) {
+      unfinalized_objects.push_back(page.ObjectHeader());
     }
     const size_t space_index = page.space().index();
     DCHECK_GT(states_->size(), space_index);
     SpaceState& state = (*states_)[space_index];
+    // Avoid directly destroying large pages here as counter updates and
+    // backend access in BasePage::Destroy() are not concurrency safe.
     state.swept_unfinalized_pages.Push(
-        {&page, {page.ObjectHeader()}, {}, {}, true});
+        {&page, std::move(unfinalized_objects), {}, {}, true});
     return true;
   }
 
@@ -597,8 +600,10 @@ class ConcurrentSweepTask final : public cppgc::JobTask,
 // This visitor:
 // - clears free lists for all spaces;
 // - moves all Heap pages to local Sweeper's state (SpaceStates).
+// - ASAN: Poisons all unmarked object payloads.
 class PrepareForSweepVisitor final
-    : public HeapVisitor<PrepareForSweepVisitor> {
+    : protected HeapVisitor<PrepareForSweepVisitor> {
+  friend class HeapVisitor<PrepareForSweepVisitor>;
   using CompactableSpaceHandling =
       Sweeper::SweepingConfig::CompactableSpaceHandling;
 
@@ -608,6 +613,9 @@ class PrepareForSweepVisitor final
       : states_(states),
         compactable_space_handling_(compactable_space_handling) {}
 
+  void Run(RawHeap& raw_heap) { Traverse(raw_heap); }
+
+ protected:
   bool VisitNormalPageSpace(NormalPageSpace& space) {
     if ((compactable_space_handling_ == CompactableSpaceHandling::kIgnore) &&
         space.is_compactable())
@@ -677,7 +685,7 @@ class Sweeper::SweeperImpl final {
     }
 
     PrepareForSweepVisitor(&space_states_, config.compactable_space_handling)
-        .Traverse(heap_);
+        .Run(heap_);
 
     if (config.sweeping_type == SweepingConfig::SweepingType::kAtomic) {
       Finish();
@@ -810,7 +818,7 @@ class Sweeper::SweeperImpl final {
       MutatorThreadSweeper sweeper(&space_states_, platform_,
                                    config_.free_memory_handling);
       {
-        StatsCollector::EnabledScope stats_scope(
+        StatsCollector::EnabledScope inner_stats_scope(
             stats_collector_, internal_scope_id, "deltaInSeconds",
             deadline_in_seconds - platform_->MonotonicallyIncreasingTime());
 

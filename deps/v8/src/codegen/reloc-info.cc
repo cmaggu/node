@@ -157,7 +157,8 @@ void RelocInfoWriter::Write(const RelocInfo* rinfo) {
       WriteShortData(rinfo->data());
     } else if (RelocInfo::IsConstPool(rmode) ||
                RelocInfo::IsVeneerPool(rmode) || RelocInfo::IsDeoptId(rmode) ||
-               RelocInfo::IsDeoptPosition(rmode)) {
+               RelocInfo::IsDeoptPosition(rmode) ||
+               RelocInfo::IsDeoptNodeId(rmode)) {
       WriteIntData(static_cast<int>(rinfo->data()));
     }
   }
@@ -244,7 +245,8 @@ void RelocIterator::next() {
         } else if (RelocInfo::IsConstPool(rmode) ||
                    RelocInfo::IsVeneerPool(rmode) ||
                    RelocInfo::IsDeoptId(rmode) ||
-                   RelocInfo::IsDeoptPosition(rmode)) {
+                   RelocInfo::IsDeoptPosition(rmode) ||
+                   RelocInfo::IsDeoptNodeId(rmode)) {
           if (SetMode(rmode)) {
             AdvanceReadInt();
             return;
@@ -318,7 +320,7 @@ bool RelocInfo::OffHeapTargetIsCodedSpecially() {
 #elif defined(V8_TARGET_ARCH_IA32) || defined(V8_TARGET_ARCH_MIPS) || \
     defined(V8_TARGET_ARCH_MIPS64) || defined(V8_TARGET_ARCH_PPC) ||  \
     defined(V8_TARGET_ARCH_PPC64) || defined(V8_TARGET_ARCH_S390) ||  \
-    defined(V8_TARGET_ARCH_RISCV64)
+    defined(V8_TARGET_ARCH_RISCV64) || defined(V8_TARGET_ARCH_LOONG64)
   return true;
 #endif
 }
@@ -422,6 +424,10 @@ const char* RelocInfo::RelocModeName(RelocInfo::Mode rmode) {
       return "deopt reason";
     case DEOPT_ID:
       return "deopt index";
+    case LITERAL_CONSTANT:
+      return "literal constant";
+    case DEOPT_NODE_ID:
+      return "deopt node id";
     case CONST_POOL:
       return "constant pool";
     case VENEER_POOL:
@@ -445,9 +451,9 @@ void RelocInfo::Print(Isolate* isolate, std::ostream& os) {
     os << "  ("
        << DeoptimizeReasonToString(static_cast<DeoptimizeReason>(data_)) << ")";
   } else if (rmode_ == FULL_EMBEDDED_OBJECT) {
-    os << "  (" << Brief(target_object()) << ")";
+    os << "  (" << Brief(target_object(isolate)) << ")";
   } else if (rmode_ == COMPRESSED_EMBEDDED_OBJECT) {
-    os << "  (" << Brief(target_object()) << " compressed)";
+    os << "  (" << Brief(target_object(isolate)) << " compressed)";
   } else if (rmode_ == EXTERNAL_REFERENCE) {
     if (isolate) {
       ExternalReferenceEncoder ref_encoder(isolate);
@@ -485,11 +491,11 @@ void RelocInfo::Print(Isolate* isolate, std::ostream& os) {
 void RelocInfo::Verify(Isolate* isolate) {
   switch (rmode_) {
     case COMPRESSED_EMBEDDED_OBJECT:
-      Object::VerifyPointer(isolate, target_object());
+      Object::VerifyPointer(isolate, target_object(isolate));
       break;
     case FULL_EMBEDDED_OBJECT:
     case DATA_EMBEDDED_OBJECT:
-      Object::VerifyAnyTagged(isolate, target_object());
+      Object::VerifyAnyTagged(isolate, target_object(isolate));
       break;
     case CODE_TARGET:
     case RELATIVE_CODE_TARGET: {
@@ -525,6 +531,8 @@ void RelocInfo::Verify(Isolate* isolate) {
     case DEOPT_INLINING_ID:
     case DEOPT_REASON:
     case DEOPT_ID:
+    case LITERAL_CONSTANT:
+    case DEOPT_NODE_ID:
     case CONST_POOL:
     case VENEER_POOL:
     case WASM_CALL:

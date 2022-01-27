@@ -66,7 +66,7 @@ Handle<Code> BuildPlaceholder(Isolate* isolate, Builtin builtin) {
                       ExternalAssemblerBuffer(buffer, kBufferSize));
   DCHECK(!masm.has_frame());
   {
-    FrameScope scope(&masm, StackFrame::NONE);
+    FrameScope frame_scope(&masm, StackFrame::NO_FRAME_TYPE);
     // The contents of placeholder don't matter, as long as they don't create
     // embedded constants or external references.
     masm.Move(kJavaScriptCallCodeStartRegister, Smi::zero());
@@ -156,11 +156,11 @@ Code BuildWithCodeStubAssemblerJS(Isolate* isolate, Builtin builtin,
   CanonicalHandleScope canonical(isolate);
 
   Zone zone(isolate->allocator(), ZONE_NAME, kCompressGraphZone);
-  const int argc_with_recv =
-      (argc == kDontAdaptArgumentsSentinel) ? 0 : argc + 1;
-  compiler::CodeAssemblerState state(
-      isolate, &zone, argc_with_recv, CodeKind::BUILTIN, name,
-      PoisoningMitigationLevel::kDontPoison, builtin);
+  const int argc_with_recv = (argc == kDontAdaptArgumentsSentinel)
+                                 ? 0
+                                 : argc + (kJSArgcIncludesReceiver ? 0 : 1);
+  compiler::CodeAssemblerState state(isolate, &zone, argc_with_recv,
+                                     CodeKind::BUILTIN, name, builtin);
   generator(&state);
   Handle<Code> code = compiler::CodeAssembler::GenerateCode(
       &state, BuiltinAssemblerOptions(isolate, builtin),
@@ -183,9 +183,8 @@ Code BuildWithCodeStubAssemblerCS(Isolate* isolate, Builtin builtin,
   CallInterfaceDescriptor descriptor(interface_descriptor);
   // Ensure descriptor is already initialized.
   DCHECK_LE(0, descriptor.GetRegisterParameterCount());
-  compiler::CodeAssemblerState state(
-      isolate, &zone, descriptor, CodeKind::BUILTIN, name,
-      PoisoningMitigationLevel::kDontPoison, builtin);
+  compiler::CodeAssemblerState state(isolate, &zone, descriptor,
+                                     CodeKind::BUILTIN, name, builtin);
   generator(&state);
   Handle<Code> code = compiler::CodeAssembler::GenerateCode(
       &state, BuiltinAssemblerOptions(isolate, builtin),
@@ -227,6 +226,7 @@ void SetupIsolateDelegate::ReplacePlaceholders(Isolate* isolate) {
       RelocInfo::ModeMask(RelocInfo::FULL_EMBEDDED_OBJECT) |
       RelocInfo::ModeMask(RelocInfo::COMPRESSED_EMBEDDED_OBJECT) |
       RelocInfo::ModeMask(RelocInfo::RELATIVE_CODE_TARGET);
+  PtrComprCageBase cage_base(isolate);
   for (Builtin builtin = Builtins::kFirst; builtin <= Builtins::kLast;
        ++builtin) {
     Code code = builtins->code(builtin);
@@ -243,8 +243,8 @@ void SetupIsolateDelegate::ReplacePlaceholders(Isolate* isolate) {
                                   UPDATE_WRITE_BARRIER, SKIP_ICACHE_FLUSH);
       } else {
         DCHECK(RelocInfo::IsEmbeddedObjectMode(rinfo->rmode()));
-        Object object = rinfo->target_object();
-        if (!object.IsCode()) continue;
+        Object object = rinfo->target_object(cage_base);
+        if (!object.IsCode(cage_base)) continue;
         Code target = Code::cast(object);
         if (!target.is_builtin()) continue;
         Code new_target = builtins->code(target.builtin_id());

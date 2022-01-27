@@ -44,10 +44,12 @@ EXTRA_FLAGS = [
   (0.1, '--regexp-tier-up-ticks=100'),
   (0.1, '--stress-background-compile'),
   (0.1, '--stress-concurrent-inlining'),
+  (0.1, '--stress-flush-code'),
   (0.1, '--stress-lazy-source-positions'),
   (0.1, '--stress-wasm-code-gc'),
   (0.1, '--turbo-instruction-scheduling'),
   (0.1, '--turbo-stress-instruction-scheduling'),
+  (0.1, '--turbo-force-mid-tier-regalloc'),
 ]
 
 def random_extra_flags(rng):
@@ -265,6 +267,10 @@ class CompactionFuzzer(Fuzzer):
     while True:
       yield ['--stress-compaction-random']
 
+class StackSizeFuzzer(Fuzzer):
+  def create_flags_generator(self, rng, test, analysis_value):
+    while True:
+      yield ['--stack-size=%d' % rng.randint(54, 983)]
 
 class TaskDelayFuzzer(Fuzzer):
   def create_flags_generator(self, rng, test, analysis_value):
@@ -322,6 +328,7 @@ FUZZERS = {
   'gc_interval': (GcIntervalAnalyzer, GcIntervalFuzzer),
   'marking': (MarkingAnalyzer, MarkingFuzzer),
   'scavenge': (ScavengeAnalyzer, ScavengeFuzzer),
+  'stack': (None, StackSizeFuzzer),
   'threads': (None, ThreadPoolSizeFuzzer),
 }
 

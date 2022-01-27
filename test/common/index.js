@@ -272,7 +272,7 @@ let knownGlobals = [
 
 // TODO(@jasnell): This check can be temporary. AbortController is
 // not currently supported in either Node.js 12 or 10, making it
-// difficult to run tests comparitively on those versions. Once
+// difficult to run tests comparatively on those versions. Once
 // all supported versions have AbortController as a global, this
 // check can be removed and AbortController can be added to the
 // knownGlobals list above.
@@ -549,7 +549,11 @@ function _expectWarning(name, expected, code) {
     expected.forEach(([_, code]) => assert(code, expected));
   }
   return mustCall((warning) => {
-    const [ message, code ] = expected.shift();
+    const expectedProperties = expected.shift();
+    if (!expectedProperties) {
+      assert.fail(`Unexpected extra warning received: ${warning}`);
+    }
+    const [ message, code ] = expectedProperties;
     assert.strictEqual(warning.name, name);
     if (typeof message === 'string') {
       assert.strictEqual(warning.message, message);
@@ -885,8 +889,14 @@ const common = {
       throw new Error('common.PORT cannot be used in a parallelized test');
     }
     return +process.env.NODE_COMMON_PORT || 12346;
-  }
+  },
 
+  /**
+   * Returns the EOL character used by this Git checkout.
+   */
+  get checkoutEOL() {
+    return fs.readFileSync(__filename).includes('\r\n') ? '\r\n' : '\n';
+  },
 };
 
 const validProperties = new Set(Object.keys(common));

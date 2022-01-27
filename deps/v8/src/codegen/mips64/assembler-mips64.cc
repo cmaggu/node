@@ -3764,7 +3764,7 @@ void Assembler::GrowBuffer() {
   buffer_ = std::move(new_buffer);
   buffer_start_ = new_start;
   pc_ += pc_delta;
-  last_call_pc_ += pc_delta;
+  pc_for_safepoint_ += pc_delta;
   reloc_info_writer.Reposition(reloc_info_writer.pos() + rc_delta,
                                reloc_info_writer.last_pc() + pc_delta);
 
@@ -3778,6 +3778,7 @@ void Assembler::GrowBuffer() {
       RelocateInternalReference(rmode, it.rinfo()->pc(), pc_delta);
     }
   }
+
   DCHECK(!overflow());
 }
 
@@ -3790,7 +3791,8 @@ void Assembler::db(uint8_t data) {
 void Assembler::dd(uint32_t data, RelocInfo::Mode rmode) {
   CheckForEmitInForbiddenSlot();
   if (!RelocInfo::IsNone(rmode)) {
-    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode) ||
+           RelocInfo::IsLiteralConstant(rmode));
     RecordRelocInfo(rmode);
   }
   *reinterpret_cast<uint32_t*>(pc_) = data;
@@ -3800,7 +3802,8 @@ void Assembler::dd(uint32_t data, RelocInfo::Mode rmode) {
 void Assembler::dq(uint64_t data, RelocInfo::Mode rmode) {
   CheckForEmitInForbiddenSlot();
   if (!RelocInfo::IsNone(rmode)) {
-    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode) ||
+           RelocInfo::IsLiteralConstant(rmode));
     RecordRelocInfo(rmode);
   }
   *reinterpret_cast<uint64_t*>(pc_) = data;

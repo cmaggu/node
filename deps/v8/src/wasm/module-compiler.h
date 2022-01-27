@@ -44,9 +44,11 @@ class CompilationResultResolver;
 class ErrorThrower;
 class ModuleCompiler;
 class NativeModule;
+class StreamingDecoder;
 class WasmCode;
 struct WasmModule;
 
+V8_EXPORT_PRIVATE
 std::shared_ptr<NativeModule> CompileToNativeModule(
     Isolate* isolate, const WasmFeatures& enabled, ErrorThrower* thrower,
     std::shared_ptr<const WasmModule> module, const ModuleWireBytes& wire_bytes,
@@ -71,9 +73,10 @@ WasmCode* CompileImportWrapper(
 // Triggered by the WasmCompileLazy builtin. The return value indicates whether
 // compilation was successful. Lazy compilation can fail only if validation is
 // also lazy.
-bool CompileLazy(Isolate*, Handle<WasmModuleObject>, int func_index);
+bool CompileLazy(Isolate*, Handle<WasmInstanceObject>, int func_index);
 
-void TriggerTierUp(Isolate*, NativeModule*, int func_index);
+void TriggerTierUp(Isolate*, NativeModule*, int func_index,
+                   Handle<WasmInstanceObject> instance);
 
 template <typename Key, typename Hash>
 class WrapperQueue {

@@ -83,6 +83,7 @@ int FeedbackMetadata::GetSlotSize(FeedbackSlotKind kind) {
     case FeedbackSlotKind::kStoreNamedSloppy:
     case FeedbackSlotKind::kStoreNamedStrict:
     case FeedbackSlotKind::kStoreOwnNamed:
+    case FeedbackSlotKind::kDefineOwnKeyed:
     case FeedbackSlotKind::kStoreGlobalSloppy:
     case FeedbackSlotKind::kStoreGlobalStrict:
     case FeedbackSlotKind::kStoreKeyedSloppy:
@@ -112,7 +113,16 @@ FeedbackMetadata FeedbackVector::metadata() const {
   return shared_function_info().feedback_metadata();
 }
 
-void FeedbackVector::clear_invocation_count() { set_invocation_count(0); }
+FeedbackMetadata FeedbackVector::metadata(AcquireLoadTag tag) const {
+  return shared_function_info().feedback_metadata(tag);
+}
+
+RELAXED_INT32_ACCESSORS(FeedbackVector, invocation_count,
+                        kInvocationCountOffset)
+
+void FeedbackVector::clear_invocation_count(RelaxedStoreTag tag) {
+  set_invocation_count(0, tag);
+}
 
 Code FeedbackVector::optimized_code() const {
   MaybeObject slot = maybe_optimized_code(kAcquireLoad);

@@ -8,7 +8,7 @@ import cp from 'node:child_process';
 import fs from 'node:fs';
 import readline from 'node:readline';
 
-const SINCE = +process.argv[2] || 5000;
+const SINCE = process.argv[2] || '18 months ago';
 
 async function runGitCommand(cmd, mapFn) {
   const childProcess = cp.spawn('/bin/sh', ['-c', cmd], {
@@ -42,20 +42,14 @@ async function runGitCommand(cmd, mapFn) {
 
 // Get all commit authors during the time period.
 const authors = await runGitCommand(
-  `git shortlog -n -s --email --max-count="${SINCE}" HEAD`,
-  (line) => line.trim().split('\t', 2)[1]
-);
-
-// Get all commit landers during the time period.
-const landers = await runGitCommand(
-  `git shortlog -n -s -c --email --max-count="${SINCE}" HEAD`,
+  `git shortlog -n -s --email --since="${SINCE}" HEAD`,
   (line) => line.trim().split('\t', 2)[1]
 );
 
 // Get all approving reviewers of landed commits during the time period.
 const approvingReviewers = await runGitCommand(
-  `git log --max-count="${SINCE}" | egrep "^    Reviewed-By: "`,
-  (line) => /^    Reviewed-By: ([^<]+)/.exec(line)[1].trim()
+  `git log --since="${SINCE}" | egrep "^    Reviewed-By: "`,
+  (line) => /^ {4}Reviewed-By: ([^<]+)/.exec(line)[1].trim()
 );
 
 async function getCollaboratorsFromReadme() {
@@ -77,8 +71,8 @@ async function getCollaboratorsFromReadme() {
     if (line === '### Collaborators') {
       foundCollaboratorHeading = true;
     }
-    if (line.startsWith('**') && isCollaborator) {
-      const [, name, email] = /^\*\*([^*]+)\*\* &lt;(.+)&gt;/.exec(line);
+    if (line.startsWith('  **') && isCollaborator) {
+      const [, name, email] = /^ {2}\*\*([^*]+)\*\* <<(.+)>>/.exec(line);
       const mailmap = await runGitCommand(
         `git check-mailmap '${name} <${email}>'`
       );
@@ -115,7 +109,7 @@ async function moveCollaboratorToEmeritus(peopleToMove) {
     // the list, print out the remaining entries to be moved because they come
     // alphabetically after the last item.
     if (inCollaboratorEmeritusSection && line === '' &&
-        fileContents.endsWith('&gt;\n')) {
+        fileContents.endsWith('>\n')) {
       while (textToMove.length) {
         fileContents += textToMove.pop();
       }
@@ -141,8 +135,8 @@ async function moveCollaboratorToEmeritus(peopleToMove) {
     if (isCollaborator) {
       if (line.startsWith('* ')) {
         collaboratorFirstLine = line;
-      } else if (line.startsWith('**')) {
-        const [, name, email] = /^\*\*([^*]+)\*\* &lt;(.+)&gt;/.exec(line);
+      } else if (line.startsWith('  **')) {
+        const [, name, email] = /^ {2}\*\*([^*]+)\*\* <<(.+)>>/.exec(line);
         if (peopleToMove.some((entry) => {
           return entry.name === name && entry.email === email;
         })) {
@@ -158,7 +152,7 @@ async function moveCollaboratorToEmeritus(peopleToMove) {
     if (isCollaboratorEmeritus) {
       if (line.startsWith('* ')) {
         collaboratorFirstLine = line;
-      } else if (line.startsWith('**')) {
+      } else if (line.startsWith('  **')) {
         const currentLine = `${collaboratorFirstLine}\n${line}\n`;
         // If textToMove is empty, this still works because when undefined is
         // used in a comparison with <, the result is always false.
@@ -182,23 +176,22 @@ async function moveCollaboratorToEmeritus(peopleToMove) {
 // Get list of current collaborators from README.md.
 const collaborators = await getCollaboratorsFromReadme();
 
-console.log(`In the last ${SINCE} commits:\n`);
+console.log(`Since ${SINCE}:\n`);
 console.log(`* ${authors.size.toLocaleString()} authors have made commits.`);
-console.log(`* ${landers.size.toLocaleString()} landers have landed commits.`);
 console.log(`* ${approvingReviewers.size.toLocaleString()} reviewers have approved landed commits.`);
 console.log(`* ${collaborators.length.toLocaleString()} collaborators currently in the project.`);
 
 const inactive = collaborators.filter((collaborator) =>
   !authors.has(collaborator.mailmap) &&
-  !landers.has(collaborator.mailmap) &&
   !approvingReviewers.has(collaborator.name)
 );
 
 if (inactive.length) {
   console.log('\nInactive collaborators:\n');
   console.log(inactive.map((entry) => `* ${entry.name}`).join('\n'));
-  console.log('\nGenerating new README.md file...');
-  const newReadmeText = await moveCollaboratorToEmeritus(inactive);
-  fs.writeFileSync(new URL('../README.md', import.meta.url), newReadmeText);
-  console.log('Updated README.md generated. Please commit these changes.');
+  if (process.env.GITHUB_ACTIONS) {
+    console.log('\nGenerating new README.md file...');
+    const newReadmeText = await moveCollaboratorToEmeritus(inactive);
+    fs.writeFileSync(new URL('../README.md', import.meta.url), newReadmeText);
+  }
 }

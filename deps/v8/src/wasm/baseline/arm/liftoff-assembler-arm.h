@@ -10,6 +10,7 @@
 #include "src/heap/memory-chunk.h"
 #include "src/wasm/baseline/liftoff-assembler.h"
 #include "src/wasm/baseline/liftoff-register.h"
+#include "src/wasm/wasm-objects.h"
 
 namespace v8 {
 namespace internal {
@@ -55,18 +56,22 @@ inline constexpr Condition ToCondition(LiftoffCondition liftoff_cond) {
 //   0   | previous frame (fp)|
 //  -----+--------------------+  <-- frame ptr (fp)
 //  -1   | 0xa: WASM          |
-//  -2   |     instance       |
+//  -2   |    instance        |
+//  -3   |    feedback vector |
+//  -4   |    tiering budget  |
 //  -----+--------------------+---------------------------
-//  -3   |    slot 0 (high)   |   ^
-//  -4   |    slot 0 (low)    |   |
-//  -5   |    slot 1 (high)   | Frame slots
-//  -6   |    slot 1 (low)    |   |
+//  -5   |    slot 0 (high)   |   ^
+//  -6   |    slot 0 (low)    |   |
+//  -7   |    slot 1 (high)   | Frame slots
+//  -8   |    slot 1 (low)    |   |
 //       |                    |   v
 //  -----+--------------------+  <-- stack ptr (sp)
 //
 static_assert(2 * kSystemPointerSize == LiftoffAssembler::kStackSlotSize,
               "Slot size should be twice the size of the 32 bit pointer.");
 constexpr int kInstanceOffset = 2 * kSystemPointerSize;
+constexpr int kFeedbackVectorOffset = 3 * kSystemPointerSize;
+constexpr int kTierupBudgetOffset = 4 * kSystemPointerSize;
 // kPatchInstructionsRequired sets a maximum limit of how many instructions that
 // PatchPrepareStackFrame will use in order to increase the stack appropriately.
 // Three instructions are required to sub a large constant, movw + movt + sub.
@@ -437,7 +442,7 @@ inline void EmitAnyTrue(LiftoffAssembler* assm, LiftoffRegister dst,
 
 int LiftoffAssembler::PrepareStackFrame() {
   if (!CpuFeatures::IsSupported(ARMv7)) {
-    bailout(kUnsupportedArchitecture, "Armv6 not supported");
+    bailout(kUnsupportedArchitecture, "Liftoff needs ARMv7");
     return 0;
   }
   uint32_t offset = static_cast<uint32_t>(pc_offset());
@@ -478,51 +483,76 @@ void LiftoffAssembler::PrepareTailCall(int num_callee_stack_params,
 
 void LiftoffAssembler::AlignFrameSize() {}
 
-void LiftoffAssembler::PatchPrepareStackFrame(int offset) {
-  // The frame_size includes the frame marker. The frame marker has already been
-  // pushed on the stack though, so we don't need to allocate memory for it
-  // anymore.
-  int frame_size = GetTotalFrameSize() - kSystemPointerSize;
-
-  // When using the simulator, deal with Liftoff which allocates the stack
-  // before checking it.
-  // TODO(arm): Remove this when the stack check mechanism will be updated.
-  // Note: This check is only needed for simulator runs, but we run it
-  // unconditionally to make sure that the simulator executes the same code
-  // that's also executed on native hardware (see https://crbug.com/v8/11041).
-  if (frame_size > KB / 2) {
-    bailout(kOtherReason,
-            "Stack limited to 512 bytes to avoid a bug in StackCheck");
-    return;
-  }
+void LiftoffAssembler::PatchPrepareStackFrame(
+    int offset, SafepointTableBuilder* safepoint_table_builder) {
+  // The frame_size includes the frame marker and the instance slot. Both are
+  // pushed as part of frame construction, so we don't need to allocate memory
+  // for them anymore.
+  int frame_size = GetTotalFrameSize() - 2 * kSystemPointerSize;
 
   PatchingAssembler patching_assembler(AssemblerOptions{},
                                        buffer_start_ + offset,
                                        liftoff::kPatchInstructionsRequired);
-#if V8_OS_WIN
-  if (frame_size > kStackPageSize) {
-    // Generate OOL code (at the end of the function, where the current
-    // assembler is pointing) to do the explicit stack limit check (see
-    // https://docs.microsoft.com/en-us/previous-versions/visualstudio/
-    // visual-studio-6.0/aa227153(v=vs.60)).
-    // At the function start, emit a jump to that OOL code (from {offset} to
-    // {pc_offset()}).
-    int ool_offset = pc_offset() - offset;
-    patching_assembler.b(ool_offset - Instruction::kPcLoadDelta);
+  if (V8_LIKELY(frame_size < 4 * KB)) {
+    // This is the standard case for small frames: just subtract from SP and be
+    // done with it.
+    patching_assembler.sub(sp, sp, Operand(frame_size));
     patching_assembler.PadWithNops();
-
-    // Now generate the OOL code.
-    AllocateStackSpace(frame_size);
-    // Jump back to the start of the function (from {pc_offset()} to {offset +
-    // liftoff::kPatchInstructionsRequired * kInstrSize}).
-    int func_start_offset =
-        offset + liftoff::kPatchInstructionsRequired * kInstrSize - pc_offset();
-    b(func_start_offset - Instruction::kPcLoadDelta);
     return;
   }
-#endif
-  patching_assembler.sub(sp, sp, Operand(frame_size));
+
+  // The frame size is bigger than 4KB, so we might overflow the available stack
+  // space if we first allocate the frame and then do the stack check (we will
+  // need some remaining stack space for throwing the exception). That's why we
+  // check the available stack space before we allocate the frame. To do this we
+  // replace the {__ sub(sp, sp, framesize)} with a jump to OOL code that does
+  // this "extended stack check".
+  //
+  // The OOL code can simply be generated here with the normal assembler,
+  // because all other code generation, including OOL code, has already finished
+  // when {PatchPrepareStackFrame} is called. The function prologue then jumps
+  // to the current {pc_offset()} to execute the OOL code for allocating the
+  // large frame.
+
+  // Emit the unconditional branch in the function prologue (from {offset} to
+  // {pc_offset()}).
+  patching_assembler.b(pc_offset() - offset - Instruction::kPcLoadDelta);
   patching_assembler.PadWithNops();
+
+  // If the frame is bigger than the stack, we throw the stack overflow
+  // exception unconditionally. Thereby we can avoid the integer overflow
+  // check in the condition code.
+  RecordComment("OOL: stack check for large frame");
+  Label continuation;
+  if (frame_size < FLAG_stack_size * 1024) {
+    UseScratchRegisterScope temps(this);
+    Register stack_limit = temps.Acquire();
+    ldr(stack_limit,
+        FieldMemOperand(kWasmInstanceRegister,
+                        WasmInstanceObject::kRealStackLimitAddressOffset));
+    ldr(stack_limit, MemOperand(stack_limit));
+    add(stack_limit, stack_limit, Operand(frame_size));
+    cmp(sp, stack_limit);
+    b(cs /* higher or same */, &continuation);
+  }
+
+  Call(wasm::WasmCode::kWasmStackOverflow, RelocInfo::WASM_STUB_CALL);
+  // The call will not return; just define an empty safepoint.
+  safepoint_table_builder->DefineSafepoint(this);
+  if (FLAG_debug_code) stop();
+
+  bind(&continuation);
+
+  // Now allocate the stack space. Note that this might do more than just
+  // decrementing the SP; consult {TurboAssembler::AllocateStackSpace}.
+  AllocateStackSpace(frame_size);
+
+  // Jump back to the start of the function, from {pc_offset()} to
+  // right after the reserved space for the {__ sub(sp, sp, framesize)} (which
+  // is a branch now).
+  int func_start_offset =
+      offset + liftoff::kPatchInstructionsRequired * kInstrSize;
+  b(func_start_offset - pc_offset() - Instruction::kPcLoadDelta);
 }
 
 void LiftoffAssembler::FinishCode() { CheckConstPool(true, false); }
@@ -531,7 +561,7 @@ void LiftoffAssembler::AbortCompilation() { AbortedCodeGeneration(); }
 
 // static
 constexpr int LiftoffAssembler::StaticStackFrameSize() {
-  return liftoff::kInstanceOffset;
+  return liftoff::kTierupBudgetOffset;
 }
 
 int LiftoffAssembler::SlotSizeForType(ValueKind kind) {
@@ -2209,6 +2239,13 @@ void LiftoffAssembler::emit_i32_cond_jumpi(LiftoffCondition liftoff_cond,
   Condition cond = liftoff::ToCondition(liftoff_cond);
   cmp(lhs, Operand(imm));
   b(label, cond);
+}
+
+void LiftoffAssembler::emit_i32_subi_jump_negative(Register value,
+                                                   int subtrahend,
+                                                   Label* result_negative) {
+  sub(value, value, Operand(subtrahend), SetCC);
+  b(result_negative, mi);
 }
 
 void LiftoffAssembler::emit_i32_eqz(Register dst, Register src) {
@@ -4236,14 +4273,34 @@ void LiftoffAssembler::MaybeOSR() {}
 
 void LiftoffAssembler::emit_set_if_nan(Register dst, DoubleRegister src,
                                        ValueKind kind) {
-  UNIMPLEMENTED();
+  if (kind == kF32) {
+    FloatRegister src_f = liftoff::GetFloatRegister(src);
+    VFPCompareAndSetFlags(src_f, src_f);
+  } else {
+    DCHECK_EQ(kind, kF64);
+    VFPCompareAndSetFlags(src, src);
+  }
+
+  // Store a non-zero value if src is NaN.
+  str(dst, MemOperand(dst), ne);  // x != x iff isnan(x)
 }
 
-void LiftoffAssembler::emit_s128_set_if_nan(Register dst, DoubleRegister src,
+void LiftoffAssembler::emit_s128_set_if_nan(Register dst, LiftoffRegister src,
                                             Register tmp_gp,
-                                            DoubleRegister tmp_fp,
+                                            LiftoffRegister tmp_s128,
                                             ValueKind lane_kind) {
-  UNIMPLEMENTED();
+  QwNeonRegister src_q = liftoff::GetSimd128Register(src);
+  QwNeonRegister tmp_q = liftoff::GetSimd128Register(tmp_s128);
+  if (lane_kind == kF32) {
+    vpadd(tmp_q.low(), src_q.low(), src_q.high());
+    LowDwVfpRegister tmp_d =
+        LowDwVfpRegister::from_code(tmp_s128.low_fp().code());
+    vadd(tmp_d.low(), tmp_d.low(), tmp_d.high());
+  } else {
+    DCHECK_EQ(lane_kind, kF64);
+    vadd(tmp_q.low(), src_q.low(), src_q.high());
+  }
+  emit_set_if_nan(dst, tmp_q.low(), lane_kind);
 }
 
 void LiftoffStackSlots::Construct(int param_slots) {

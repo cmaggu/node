@@ -878,7 +878,6 @@ int Assembler::target_at(int pos, bool is_internal) {
       }
     }
   }
-  return 0;
 }
 
 static inline Instr SetBranchOffset(int32_t pos, int32_t target_pos,
@@ -1988,11 +1987,11 @@ void Assembler::AdjustBaseAndOffset(MemOperand* src,
   constexpr int32_t kMaxOffsetForSimpleAdjustment =
       2 * kMinOffsetForSimpleAdjustment;
   if (0 <= src->offset() && src->offset() <= kMaxOffsetForSimpleAdjustment) {
-    addiu(at, src->rm(), kMinOffsetForSimpleAdjustment);
+    addiu(scratch, src->rm(), kMinOffsetForSimpleAdjustment);
     src->offset_ -= kMinOffsetForSimpleAdjustment;
   } else if (-kMaxOffsetForSimpleAdjustment <= src->offset() &&
              src->offset() < 0) {
-    addiu(at, src->rm(), -kMinOffsetForSimpleAdjustment);
+    addiu(scratch, src->rm(), -kMinOffsetForSimpleAdjustment);
     src->offset_ += kMinOffsetForSimpleAdjustment;
   } else if (IsMipsArchVariant(kMips32r6)) {
     // On r6 take advantage of the aui instruction, e.g.:
@@ -3565,7 +3564,7 @@ void Assembler::GrowBuffer() {
   buffer_ = std::move(new_buffer);
   buffer_start_ = new_start;
   pc_ += pc_delta;
-  last_call_pc_ += pc_delta;
+  pc_for_safepoint_ += pc_delta;
   reloc_info_writer.Reposition(reloc_info_writer.pos() + rc_delta,
                                reloc_info_writer.last_pc() + pc_delta);
 
@@ -3580,6 +3579,7 @@ void Assembler::GrowBuffer() {
       RelocateInternalReference(rmode, it.rinfo()->pc(), pc_delta);
     }
   }
+
   DCHECK(!overflow());
 }
 
@@ -3592,7 +3592,8 @@ void Assembler::db(uint8_t data) {
 void Assembler::dd(uint32_t data, RelocInfo::Mode rmode) {
   CheckForEmitInForbiddenSlot();
   if (!RelocInfo::IsNone(rmode)) {
-    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode) ||
+           RelocInfo::IsLiteralConstant(rmode));
     RecordRelocInfo(rmode);
   }
   *reinterpret_cast<uint32_t*>(pc_) = data;
@@ -3602,7 +3603,8 @@ void Assembler::dd(uint32_t data, RelocInfo::Mode rmode) {
 void Assembler::dq(uint64_t data, RelocInfo::Mode rmode) {
   CheckForEmitInForbiddenSlot();
   if (!RelocInfo::IsNone(rmode)) {
-    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+    DCHECK(RelocInfo::IsDataEmbeddedObject(rmode) ||
+           RelocInfo::IsLiteralConstant(rmode));
     RecordRelocInfo(rmode);
   }
   *reinterpret_cast<uint64_t*>(pc_) = data;
@@ -3826,7 +3828,7 @@ void Assembler::GenPCRelativeJumpAndLink(Register t, int32_t imm32,
   addu(t, ra, t);
   jalr(t);
   if (bdslot == PROTECT) nop();
-  set_last_call_pc_(pc_);
+  set_pc_for_safepoint();
 }
 
 UseScratchRegisterScope::UseScratchRegisterScope(Assembler* assembler)

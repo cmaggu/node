@@ -30,6 +30,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "include/v8-function.h"
 #include "src/api/api-inl.h"
 #include "src/base/strings.h"
 #include "src/builtins/builtins.h"
@@ -632,8 +633,8 @@ UNINITIALIZED_TEST(LogInterpretedFramesNativeStackWithSerialization) {
 
       v8::ScriptCompiler::Source script_source(source, origin, cache);
       v8::Local<v8::Function> fun =
-          v8::ScriptCompiler::CompileFunctionInContext(
-              context, &script_source, 1, &arg_str, 0, nullptr, options)
+          v8::ScriptCompiler::CompileFunction(context, &script_source, 1,
+                                              &arg_str, 0, nullptr, options)
               .ToLocalChecked();
       if (has_cache) {
         logger.StopLogging();

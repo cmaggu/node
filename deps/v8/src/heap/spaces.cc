@@ -45,6 +45,9 @@ namespace internal {
 STATIC_ASSERT(kClearedWeakHeapObjectLower32 > 0);
 STATIC_ASSERT(kClearedWeakHeapObjectLower32 < Page::kHeaderSize);
 
+// static
+constexpr Page::MainThreadFlags Page::kCopyOnFlipFlagsMask;
+
 void Page::AllocateFreeListCategories() {
   DCHECK_NULL(categories_);
   categories_ =
@@ -82,7 +85,7 @@ Page* Page::ConvertNewToOld(Page* old_page) {
   DCHECK(old_page->InNewSpace());
   OldSpace* old_space = old_page->heap()->old_space();
   old_page->set_owner(old_space);
-  old_page->SetFlags(0, static_cast<uintptr_t>(~0));
+  old_page->ClearFlags(Page::kAllFlagsMask);
   Page* new_page = old_space->InitializePage(old_page);
   old_space->AddPage(new_page);
   return new_page;
@@ -127,11 +130,12 @@ size_t Page::AvailableInFreeList() {
 namespace {
 // Skips filler starting from the given filler until the end address.
 // Returns the first address after the skipped fillers.
-Address SkipFillers(HeapObject filler, Address end) {
+Address SkipFillers(PtrComprCageBase cage_base, HeapObject filler,
+                    Address end) {
   Address addr = filler.address();
   while (addr < end) {
     filler = HeapObject::FromAddress(addr);
-    CHECK(filler.IsFreeSpaceOrFiller());
+    CHECK(filler.IsFreeSpaceOrFiller(cage_base));
     addr = filler.address() + filler.Size();
   }
   return addr;
@@ -149,9 +153,10 @@ size_t Page::ShrinkToHighWaterMark() {
   // or the area_end.
   HeapObject filler = HeapObject::FromAddress(HighWaterMark());
   if (filler.address() == area_end()) return 0;
-  CHECK(filler.IsFreeSpaceOrFiller());
+  PtrComprCageBase cage_base(heap()->isolate());
+  CHECK(filler.IsFreeSpaceOrFiller(cage_base));
   // Ensure that no objects were allocated in [filler, area_end) region.
-  DCHECK_EQ(area_end(), SkipFillers(filler, area_end()));
+  DCHECK_EQ(area_end(), SkipFillers(cage_base, filler, area_end()));
   // Ensure that no objects will be allocated on this page.
   DCHECK_EQ(0u, AvailableInFreeList());
 
@@ -178,7 +183,7 @@ size_t Page::ShrinkToHighWaterMark() {
     heap()->memory_allocator()->PartialFreeMemory(
         this, address() + size() - unused, unused, area_end() - unused);
     if (filler.address() != area_end()) {
-      CHECK(filler.IsFreeSpaceOrFiller());
+      CHECK(filler.IsFreeSpaceOrFiller(cage_base));
       CHECK_EQ(filler.address() + filler.Size(), area_end());
     }
   }
@@ -385,7 +390,7 @@ void SpaceWithLinearArea::AdvanceAllocationObservers() {
 }
 
 void SpaceWithLinearArea::MarkLabStartInitialized() {
-  allocation_info_.MoveStartToTop();
+  allocation_info_.ResetStart();
   if (identity() == NEW_SPACE) {
     heap()->new_space()->MoveOriginalTopForward();
 

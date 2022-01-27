@@ -19,7 +19,6 @@
 #include "src/heap/heap.h"
 #include "src/objects/code.h"
 #include "src/objects/dictionary.h"
-#include "src/objects/fixed-array.h"
 #include "src/objects/js-array.h"
 #include "src/objects/js-regexp.h"
 #include "src/objects/shared-function-info.h"
@@ -115,9 +114,6 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<T> MakeHandle(T obj) {
     return handle(obj, isolate());
   }
-
-  Handle<BaselineData> NewBaselineData(Handle<Code> code,
-                                       Handle<HeapObject> function_data);
 
   Handle<Oddball> NewOddball(Handle<Map> map, const char* to_string,
                              Handle<Object> to_number, const char* type_of,
@@ -280,10 +276,19 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<String> NewInternalizedStringImpl(Handle<String> string, int chars,
                                            uint32_t hash_field);
 
-  // Compute the matching internalized string map for a string if possible.
-  // Empty handle is returned if string is in new space or not flattened.
-  V8_WARN_UNUSED_RESULT MaybeHandle<Map> InternalizedStringMapForString(
-      Handle<String> string);
+  // Compute the internalization strategy for the input string.
+  //
+  // Old-generation flat strings can be internalized by mutating their map
+  // return kInPlace, along with the matching internalized string map for string
+  // is stored in internalized_map.
+  //
+  // Internalized strings return kAlreadyInternalized.
+  //
+  // All other strings are internalized by flattening and copying and return
+  // kCopy.
+  V8_WARN_UNUSED_RESULT StringInternalizationStrategy
+  ComputeInternalizationStrategyForString(Handle<String> string,
+                                          MaybeHandle<Map>* internalized_map);
 
   // Creates an internalized copy of an external string. |string| must be
   // of type StringClass.
@@ -484,6 +489,8 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
       AllocationType allocation = AllocationType::kYoung);
   // JSObject without a prototype.
   Handle<JSObject> NewJSObjectWithNullProto();
+  // JSObject without a prototype, in dictionary mode.
+  Handle<JSObject> NewSlowJSObjectWithNullProto();
 
   // Global objects are pretenured and initialized based on a constructor.
   Handle<JSGlobalObject> NewJSGlobalObject(Handle<JSFunction> constructor);
@@ -561,7 +568,8 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
 #if V8_ENABLE_WEBASSEMBLY
   Handle<WasmTypeInfo> NewWasmTypeInfo(Address type_address,
                                        Handle<Map> opt_parent,
-                                       int instance_size_bytes);
+                                       int instance_size_bytes,
+                                       Handle<WasmInstanceObject> instance);
   Handle<WasmCapiFunctionData> NewWasmCapiFunctionData(
       Address call_target, Handle<Foreign> embedder_data,
       Handle<Code> wrapper_code,
@@ -570,6 +578,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
       Handle<Code> export_wrapper, Handle<WasmInstanceObject> instance,
       Address call_target, Handle<Object> ref, int func_index,
       Address sig_address, int wrapper_budget);
+  Handle<WasmApiFunctionRef> NewWasmApiFunctionRef(Handle<JSReceiver> callable);
   // {opt_call_target} is kNullAddress for JavaScript functions, and
   // non-null for exported Wasm functions.
   Handle<WasmJSFunctionData> NewWasmJSFunctionData(
@@ -649,16 +658,10 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   // Create an External object for V8's external API.
   Handle<JSObject> NewExternal(void* value);
 
-  // Creates a new CodeDataContainer for a Code object.
-  Handle<CodeDataContainer> NewCodeDataContainer(int flags,
-                                                 AllocationType allocation);
-
   // Allocates a new code object and initializes it as the trampoline to the
   // given off-heap entry point.
   Handle<Code> NewOffHeapTrampolineFor(Handle<Code> code,
                                        Address off_heap_entry);
-
-  MaybeHandle<Code> NewEmptyCode(CodeKind kind, int buffer_size);
 
   Handle<Code> CopyCode(Handle<Code> code);
 
@@ -692,6 +695,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   DECLARE_ERROR(WasmCompileError)
   DECLARE_ERROR(WasmLinkError)
   DECLARE_ERROR(WasmRuntimeError)
+  DECLARE_ERROR(WasmExceptionError)
 #undef DECLARE_ERROR
 
   Handle<String> NumberToString(Handle<Object> number,
@@ -720,6 +724,8 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<SharedFunctionInfo> NewSharedFunctionInfoForBuiltin(
       MaybeHandle<String> name, Builtin builtin,
       FunctionKind kind = kNormalFunction);
+
+  Handle<SharedFunctionInfo> NewSharedFunctionInfoForWebSnapshot();
 
   static bool IsFunctionModeWithPrototype(FunctionMode function_mode) {
     return (function_mode & kWithPrototypeBits) != 0;
@@ -837,6 +843,10 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
    public:
     CodeBuilder(Isolate* isolate, const CodeDesc& desc, CodeKind kind);
 
+    // TODO(victorgomes): Remove Isolate dependency from CodeBuilder.
+    CodeBuilder(LocalIsolate* local_isolate, const CodeDesc& desc,
+                CodeKind kind);
+
     // Builds a new code object (fully initialized). All header fields of the
     // returned object are immutable and the code object is write protected.
     V8_WARN_UNUSED_RESULT Handle<Code> Build();
@@ -882,10 +892,14 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
 
     CodeBuilder& set_deoptimization_data(
         Handle<DeoptimizationData> deopt_data) {
+      DCHECK_NE(kind_, CodeKind::BASELINE);
       DCHECK(!deopt_data.is_null());
       deoptimization_data_ = deopt_data;
       return *this;
     }
+
+    inline CodeBuilder& set_interpreter_data(
+        Handle<HeapObject> interpreter_data);
 
     CodeBuilder& set_is_turbofanned() {
       DCHECK(!CodeKindIsUnoptimizedJSFunction(kind_));
@@ -923,12 +937,16 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
       return *this;
     }
 
+    inline bool CompiledWithConcurrentBaseline() const;
+
    private:
     MaybeHandle<Code> BuildInternal(bool retry_allocation_or_fail);
     MaybeHandle<Code> AllocateCode(bool retry_allocation_or_fail);
-    void FinalizeOnHeapCode(Handle<Code> code, ByteArray reloc_info);
+    MaybeHandle<Code> AllocateConcurrentSparkplugCode(
+        bool retry_allocation_or_fail);
 
     Isolate* const isolate_;
+    LocalIsolate* local_isolate_;
     const CodeDesc& code_desc_;
     const CodeKind kind_;
 
@@ -941,6 +959,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
     Handle<ByteArray> position_table_;
     Handle<DeoptimizationData> deoptimization_data_ =
         DeoptimizationData::Empty(isolate_);
+    Handle<HeapObject> interpreter_data_;
     BasicBlockProfilerData* profiler_data_ = nullptr;
     bool is_executable_ = true;
     bool read_only_data_container_ = false;
@@ -965,8 +984,10 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   }
   bool CanAllocateInReadOnlySpace();
   bool EmptyStringRootIsInitialized();
+  AllocationType AllocationTypeForInPlaceInternalizableString();
 
   void AddToScriptList(Handle<Script> shared);
+  void SetExternalCodeSpaceInDataContainer(CodeDataContainer data_container);
   // ------
 
   HeapObject AllocateRawWithAllocationSite(

@@ -27,6 +27,14 @@
 #include "src/runtime/runtime-utils.h"
 #include "src/utils/ostreams.h"
 
+#if V8_OS_WIN
+#include <windows.h>
+#endif
+
+#if V8_ENABLE_WEBASSEMBLY
+#include "src/trap-handler/trap-handler-simulator.h"
+#endif  // V8_ENABLE_WEBASSEMBLY
+
 namespace v8 {
 namespace internal {
 
@@ -64,6 +72,20 @@ TEXT_COLOUR clr_printf = FLAG_log_colour ? COLOUR(GREEN) : "";
 
 DEFINE_LAZY_LEAKY_OBJECT_GETTER(Simulator::GlobalMonitor,
                                 Simulator::GlobalMonitor::Get)
+
+bool Simulator::ProbeMemory(uintptr_t address, uintptr_t access_size) {
+#if V8_ENABLE_WEBASSEMBLY && V8_TRAP_HANDLER_SUPPORTED
+  uintptr_t last_accessed_byte = address + access_size - 1;
+  uintptr_t current_pc = reinterpret_cast<uintptr_t>(pc_);
+  uintptr_t landing_pad =
+      trap_handler::ProbeMemory(last_accessed_byte, current_pc);
+  if (!landing_pad) return true;
+  set_pc(landing_pad);
+  return false;
+#else
+  return true;
+#endif
+}
 
 // This is basically the same as PrintF, with a guard for FLAG_trace_sim.
 void Simulator::TraceSim(const char* format, ...) {
@@ -421,18 +443,18 @@ void Simulator::RunFrom(Instruction* start) {
 // The simulator assumes all runtime calls return two 64-bits values. If they
 // don't, register x1 is clobbered. This is fine because x1 is caller-saved.
 #if defined(V8_OS_WIN)
-using SimulatorRuntimeCall_ReturnPtr = int64_t (*)(int64_t arg0, int64_t arg1,
-                                                   int64_t arg2, int64_t arg3,
-                                                   int64_t arg4, int64_t arg5,
-                                                   int64_t arg6, int64_t arg7,
-                                                   int64_t arg8, int64_t arg9);
+using SimulatorRuntimeCall_ReturnPtr = int64_t (*)(
+    int64_t arg0, int64_t arg1, int64_t arg2, int64_t arg3, int64_t arg4,
+    int64_t arg5, int64_t arg6, int64_t arg7, int64_t arg8, int64_t arg9,
+    int64_t arg10, int64_t arg11, int64_t arg12, int64_t arg13, int64_t arg14,
+    int64_t arg15, int64_t arg16, int64_t arg17, int64_t arg18, int64_t arg19);
 #endif
 
-using SimulatorRuntimeCall = ObjectPair (*)(int64_t arg0, int64_t arg1,
-                                            int64_t arg2, int64_t arg3,
-                                            int64_t arg4, int64_t arg5,
-                                            int64_t arg6, int64_t arg7,
-                                            int64_t arg8, int64_t arg9);
+using SimulatorRuntimeCall = ObjectPair (*)(
+    int64_t arg0, int64_t arg1, int64_t arg2, int64_t arg3, int64_t arg4,
+    int64_t arg5, int64_t arg6, int64_t arg7, int64_t arg8, int64_t arg9,
+    int64_t arg10, int64_t arg11, int64_t arg12, int64_t arg13, int64_t arg14,
+    int64_t arg15, int64_t arg16, int64_t arg17, int64_t arg18, int64_t arg19);
 
 using SimulatorRuntimeCompareCall = int64_t (*)(double arg1, double arg2);
 using SimulatorRuntimeFPFPCall = double (*)(double arg1, double arg2);
@@ -453,13 +475,17 @@ using SimulatorRuntimeProfilingGetterCall = void (*)(int64_t arg0, int64_t arg1,
 // function to {SimulatorRuntimeCall} is undefined behavior; but since
 // the target function can indeed be any function that's exposed via
 // the "fast C call" mechanism, we can't reconstruct its signature here.
-ObjectPair UnsafeGenericFunctionCall(int64_t function, int64_t arg0,
-                                     int64_t arg1, int64_t arg2, int64_t arg3,
-                                     int64_t arg4, int64_t arg5, int64_t arg6,
-                                     int64_t arg7, int64_t arg8, int64_t arg9) {
+ObjectPair UnsafeGenericFunctionCall(
+    int64_t function, int64_t arg0, int64_t arg1, int64_t arg2, int64_t arg3,
+    int64_t arg4, int64_t arg5, int64_t arg6, int64_t arg7, int64_t arg8,
+    int64_t arg9, int64_t arg10, int64_t arg11, int64_t arg12, int64_t arg13,
+    int64_t arg14, int64_t arg15, int64_t arg16, int64_t arg17, int64_t arg18,
+    int64_t arg19) {
   SimulatorRuntimeCall target =
       reinterpret_cast<SimulatorRuntimeCall>(function);
-  return target(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+  return target(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
+                arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18,
+                arg19);
 }
 void UnsafeDirectApiCall(int64_t function, int64_t arg0) {
   SimulatorRuntimeDirectApiCall target =
@@ -509,13 +535,34 @@ void Simulator::DoRuntimeCall(Instruction* instr) {
   const int64_t arg7 = xreg(7);
   const int64_t arg8 = stack_pointer[0];
   const int64_t arg9 = stack_pointer[1];
-  STATIC_ASSERT(kMaxCParameters == 10);
+  const int64_t arg10 = stack_pointer[2];
+  const int64_t arg11 = stack_pointer[3];
+  const int64_t arg12 = stack_pointer[4];
+  const int64_t arg13 = stack_pointer[5];
+  const int64_t arg14 = stack_pointer[6];
+  const int64_t arg15 = stack_pointer[7];
+  const int64_t arg16 = stack_pointer[8];
+  const int64_t arg17 = stack_pointer[9];
+  const int64_t arg18 = stack_pointer[10];
+  const int64_t arg19 = stack_pointer[11];
+  STATIC_ASSERT(kMaxCParameters == 20);
 
   switch (redirection->type()) {
     default:
       TraceSim("Type: Unknown.\n");
       UNREACHABLE();
 
+    // FAST_C_CALL is temporarily handled here as well, because we lack
+    // proper support for direct C calls with FP params in the simulator.
+    // The generic BUILTIN_CALL path assumes all parameters are passed in
+    // the GP registers, thus supporting calling the slow callback without
+    // crashing. The reason for that is that in the mjsunit tests we check
+    // the `fast_c_api.supports_fp_params` (which is false on non-simulator
+    // builds for arm/arm64), thus we expect that the slow path will be
+    // called. And since the slow path passes the arguments as a `const
+    // FunctionCallbackInfo<Value>&` (which is a GP argument), the call is
+    // made correctly.
+    case ExternalReference::FAST_C_CALL:
     case ExternalReference::BUILTIN_CALL:
 #if defined(V8_OS_WIN)
     {
@@ -541,14 +588,26 @@ void Simulator::DoRuntimeCall(Instruction* instr) {
           ", "
           "0x%016" PRIx64 ", 0x%016" PRIx64
           ", "
+          "0x%016" PRIx64 ", 0x%016" PRIx64
+          ", "
+          "0x%016" PRIx64 ", 0x%016" PRIx64
+          ", "
+          "0x%016" PRIx64 ", 0x%016" PRIx64
+          ", "
+          "0x%016" PRIx64 ", 0x%016" PRIx64
+          ", "
+          "0x%016" PRIx64 ", 0x%016" PRIx64
+          ", "
           "0x%016" PRIx64 ", 0x%016" PRIx64,
-          arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+          arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
+          arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19);
 
       SimulatorRuntimeCall_ReturnPtr target =
           reinterpret_cast<SimulatorRuntimeCall_ReturnPtr>(external);
 
-      int64_t result =
-          target(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+      int64_t result = target(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7,
+                              arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+                              arg15, arg16, arg17, arg18, arg19);
       TraceSim("Returned: 0x%16\n", result);
 #ifdef DEBUG
       CorruptAllCallerSavedCPURegisters();
@@ -576,10 +635,23 @@ void Simulator::DoRuntimeCall(Instruction* instr) {
           ", "
           "0x%016" PRIx64 ", 0x%016" PRIx64
           ", "
+          "0x%016" PRIx64 ", 0x%016" PRIx64
+          ", "
+          "0x%016" PRIx64 ", 0x%016" PRIx64
+          ", "
+          "0x%016" PRIx64 ", 0x%016" PRIx64
+          ", "
+          "0x%016" PRIx64 ", 0x%016" PRIx64
+          ", "
+          "0x%016" PRIx64 ", 0x%016" PRIx64
+          ", "
           "0x%016" PRIx64 ", 0x%016" PRIx64,
-          arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+          arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
+          arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19);
+
       ObjectPair result = UnsafeGenericFunctionCall(
-          external, arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+          external, arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
+          arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18, arg19);
       TraceSim("Returned: {%p, %p}\n", reinterpret_cast<void*>(result.x),
                reinterpret_cast<void*>(result.y));
 #ifdef DEBUG
@@ -1495,7 +1567,6 @@ void Simulator::VisitPCRelAddressing(Instruction* instr) {
       break;
     case ADRP:  // Not implemented in the assembler.
       UNIMPLEMENTED();
-      break;
     default:
       UNREACHABLE();
   }
@@ -1801,6 +1872,10 @@ void Simulator::LoadStoreHelper(Instruction* instr, int64_t offset,
   uintptr_t address = LoadStoreAddress(addr_reg, offset, addrmode);
   uintptr_t stack = 0;
 
+  unsigned access_size = 1 << instr->SizeLS();
+  // First, check whether the memory is accessible (for wasm trap handling).
+  if (!ProbeMemory(address, access_size)) return;
+
   {
     base::MutexGuard lock_guard(&GlobalMonitor::Get()->mutex);
     if (instr->IsLoad()) {
@@ -1907,7 +1982,6 @@ void Simulator::LoadStoreHelper(Instruction* instr, int64_t offset,
 
   // Print a detailed trace (including the memory address) instead of the basic
   // register:value trace generated by set_*reg().
-  unsigned access_size = 1 << instr->SizeLS();
   if (instr->IsLoad()) {
     if ((op == LDR_s) || (op == LDR_d)) {
       LogVRead(address, srcdst, GetPrintRegisterFormatForSizeFP(access_size));
@@ -2187,7 +2261,6 @@ Simulator::TransactionSize Simulator::get_transaction_size(unsigned size) {
     default:
       UNREACHABLE();
   }
-  return TransactionSize::None;
 }
 
 void Simulator::VisitLoadStoreAcquireRelease(Instruction* instr) {
@@ -4886,6 +4959,7 @@ void Simulator::NEONLoadStoreSingleStructHelper(const Instruction* instr,
     case NEON_LD1R:
     case NEON_LD1R_post: {
       vf = vf_t;
+      if (!ProbeMemory(addr, LaneSizeInBytesFromFormat(vf))) return;
       ld1r(vf, vreg(rt), addr);
       do_load = true;
       break;
@@ -4894,6 +4968,7 @@ void Simulator::NEONLoadStoreSingleStructHelper(const Instruction* instr,
     case NEON_LD2R:
     case NEON_LD2R_post: {
       vf = vf_t;
+      if (!ProbeMemory(addr, 2 * LaneSizeInBytesFromFormat(vf))) return;
       int rt2 = (rt + 1) % kNumberOfVRegisters;
       ld2r(vf, vreg(rt), vreg(rt2), addr);
       do_load = true;
@@ -4903,6 +4978,7 @@ void Simulator::NEONLoadStoreSingleStructHelper(const Instruction* instr,
     case NEON_LD3R:
     case NEON_LD3R_post: {
       vf = vf_t;
+      if (!ProbeMemory(addr, 3 * LaneSizeInBytesFromFormat(vf))) return;
       int rt2 = (rt + 1) % kNumberOfVRegisters;
       int rt3 = (rt2 + 1) % kNumberOfVRegisters;
       ld3r(vf, vreg(rt), vreg(rt2), vreg(rt3), addr);
@@ -4913,6 +4989,7 @@ void Simulator::NEONLoadStoreSingleStructHelper(const Instruction* instr,
     case NEON_LD4R:
     case NEON_LD4R_post: {
       vf = vf_t;
+      if (!ProbeMemory(addr, 4 * LaneSizeInBytesFromFormat(vf))) return;
       int rt2 = (rt + 1) % kNumberOfVRegisters;
       int rt3 = (rt2 + 1) % kNumberOfVRegisters;
       int rt4 = (rt3 + 1) % kNumberOfVRegisters;
@@ -4940,6 +5017,7 @@ void Simulator::NEONLoadStoreSingleStructHelper(const Instruction* instr,
   switch (instr->Mask(NEONLoadStoreSingleLenMask)) {
     case NEONLoadStoreSingle1:
       scale = 1;
+      if (!ProbeMemory(addr, scale * esize)) return;
       if (do_load) {
         ld1(vf, vreg(rt), lane, addr);
         LogVRead(addr, rt, print_format, lane);
@@ -4950,6 +5028,7 @@ void Simulator::NEONLoadStoreSingleStructHelper(const Instruction* instr,
       break;
     case NEONLoadStoreSingle2:
       scale = 2;
+      if (!ProbeMemory(addr, scale * esize)) return;
       if (do_load) {
         ld2(vf, vreg(rt), vreg(rt2), lane, addr);
         LogVRead(addr, rt, print_format, lane);
@@ -4962,6 +5041,7 @@ void Simulator::NEONLoadStoreSingleStructHelper(const Instruction* instr,
       break;
     case NEONLoadStoreSingle3:
       scale = 3;
+      if (!ProbeMemory(addr, scale * esize)) return;
       if (do_load) {
         ld3(vf, vreg(rt), vreg(rt2), vreg(rt3), lane, addr);
         LogVRead(addr, rt, print_format, lane);
@@ -4976,6 +5056,7 @@ void Simulator::NEONLoadStoreSingleStructHelper(const Instruction* instr,
       break;
     case NEONLoadStoreSingle4:
       scale = 4;
+      if (!ProbeMemory(addr, scale * esize)) return;
       if (do_load) {
         ld4(vf, vreg(rt), vreg(rt2), vreg(rt3), vreg(rt4), lane, addr);
         LogVRead(addr, rt, print_format, lane);
@@ -5177,7 +5258,6 @@ void Simulator::VisitNEONScalar2RegMisc(Instruction* instr) {
         break;
       default:
         UNIMPLEMENTED();
-        break;
     }
   } else {
     VectorFormat fpf = nfd.GetVectorFormat(nfd.FPScalarFormatMap());
