@@ -312,6 +312,9 @@ of the list. The most recent release for each release line is shown in **bold**
 in the index. When updating the index, please make sure to update the display
 accordingly by removing the bold styling from the previous release.
 
+Run `make format-md` to ensure the `CHANGELOG_Vx.md` and `CHANGELOG.md` files
+are formatted correctly.
+
 #### Step 3: Update any REPLACEME and DEP00XX tags in the docs
 
 If this release includes new APIs then it is necessary to document that they
@@ -851,7 +854,7 @@ reflect the newly used value. Ensure that the release commit removes the
 `-pre` suffix for the major version being prepared.
 
 It is current TSC policy to bump major version when ABI changes. If you
-see a need to bump `NODE_MODULE_VERSION` outside of a majore release then
+see a need to bump `NODE_MODULE_VERSION` outside of a major release then
 you should consult the TSC. Commits may need to be reverted or a major
 version bump may need to happen.
 

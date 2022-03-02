@@ -35,6 +35,9 @@ Module._findPath = (request, paths, isMain) => {
 
 module.exports = {
   root: true,
+  env: {
+    es2022: true,
+  },
   extends: ['eslint:recommended', 'plugin:jsdoc/recommended'],
   plugins: ['jsdoc', 'markdown', 'node-core'],
   parser: '@babel/eslint-parser',
@@ -295,9 +298,7 @@ module.exports = {
     'valid-typeof': ['error', { requireStringLiterals: true }],
 
     // ESLint recommended rules that we disable
-    'no-empty': 'off',
     'no-inner-declarations': 'off',
-    'no-prototype-builtins': 'off',
 
     // JSDoc recommended rules that we disable
     'jsdoc/require-jsdoc': 'off',
@@ -316,27 +317,11 @@ module.exports = {
     'node-core/no-duplicate-requires': 'error',
   },
   globals: {
-    AbortController: 'readable',
-    AbortSignal: 'readable',
-    Atomics: 'readable',
-    BigInt: 'readable',
-    BigInt64Array: 'readable',
-    BigUint64Array: 'readable',
-    Blob: 'readable',
-    DOMException: 'readable',
-    Event: 'readable',
-    EventTarget: 'readable',
-    MessageChannel: 'readable',
-    BroadcastChannel: 'readable',
-    MessageEvent: 'readable',
-    MessagePort: 'readable',
-    TextEncoder: 'readable',
-    TextDecoder: 'readable',
-    queueMicrotask: 'readable',
-    globalThis: 'readable',
-    btoa: 'readable',
-    atob: 'readable',
-    performance: 'readable',
-    structuredClone: 'readable',
+    Crypto: 'readable',
+    CryptoKey: 'readable',
+    fetch: 'readable',
+    FormData: 'readable',
+    Response: 'readable',
+    SubtleCrypto: 'readable',
   },
 };

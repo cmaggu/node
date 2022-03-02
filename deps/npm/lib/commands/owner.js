@@ -57,7 +57,9 @@ class Owner extends BaseCommand {
   }
 
   async exec ([action, ...args]) {
-    const opts = this.npm.flatOptions
+    const opts = {
+      ...this.npm.flatOptions,
+    }
     switch (action) {
       case 'ls':
       case 'list':

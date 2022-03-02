@@ -41,6 +41,8 @@ calling `require('crypto')` will result in an error being thrown.
 
 When using CommonJS, the error thrown can be caught using try/catch:
 
+<!-- eslint-skip -->
+
 ```cjs
 let crypto;
 try {
@@ -543,7 +545,7 @@ once will result in an error being thrown.
 added: v1.0.0
 -->
 
-* Returns: {Buffer} When using an authenticated encryption mode (`GCM`, `CCM`
+* Returns: {Buffer} When using an authenticated encryption mode (`GCM`, `CCM`,
   and `OCB` are currently supported), the `cipher.getAuthTag()` method returns a
   [`Buffer`][] containing the _authentication tag_ that has been computed from
   the given data.
@@ -566,7 +568,7 @@ added: v1.0.0
   * `encoding` {string} The string encoding to use when `buffer` is a string.
 * Returns: {Cipher} for method chaining.
 
-When using an authenticated encryption mode (`GCM`, `CCM` and `OCB` are
+When using an authenticated encryption mode (`GCM`, `CCM`, and `OCB` are
 currently supported), the `cipher.setAAD()` method sets the value used for the
 _additional authenticated data_ (AAD) input parameter.
 
@@ -863,7 +865,7 @@ changes:
   * `encoding` {string} String encoding to use when `buffer` is a string.
 * Returns: {Decipher} for method chaining.
 
-When using an authenticated encryption mode (`GCM`, `CCM` and `OCB` are
+When using an authenticated encryption mode (`GCM`, `CCM`, and `OCB` are
 currently supported), the `decipher.setAAD()` method sets the value used for the
 _additional authenticated data_ (AAD) input parameter.
 
@@ -897,7 +899,7 @@ changes:
 * `encoding` {string} String encoding to use when `buffer` is a string.
 * Returns: {Decipher} for method chaining.
 
-When using an authenticated encryption mode (`GCM`, `CCM` and `OCB` are
+When using an authenticated encryption mode (`GCM`, `CCM`, and `OCB` are
 currently supported), the `decipher.setAuthTag()` method is used to pass in the
 received _authentication tag_. If no tag is provided, or if the cipher text
 has been tampered with, [`decipher.final()`][] will throw, indicating that the
@@ -2080,6 +2082,20 @@ encryption mechanism, PEM-level encryption is not supported when encrypting
 a PKCS#8 key. See [RFC 5208][] for PKCS#8 encryption and [RFC 1421][] for
 PKCS#1 and SEC1 encryption.
 
+### `keyObject.equals(otherKeyObject)`
+
+<!-- YAML
+added: REPLACEME
+-->
+
+* `otherKeyObject`: {KeyObject} A `KeyObject` with which to
+  compare `keyObject`.
+* Returns: {boolean}
+
+Returns `true` or `false` depending on whether the keys have exactly the same
+type, value, and parameters. This method is not
+[constant time](https://en.wikipedia.org/wiki/Timing_attack).
+
 ### `keyObject.symmetricKeySize`
 
 <!-- YAML
@@ -2464,7 +2480,7 @@ added: v15.6.0
 added: v15.6.0
 -->
 
-* Type: {boolean} Will be `true` if this is a Certificate Authority (ca)
+* Type: {boolean} Will be `true` if this is a Certificate Authority (CA)
   certificate.
 
 ### `x509.checkEmail(email[, options])`
@@ -2475,12 +2491,12 @@ changes:
   - version: REPLACEME
     pr-url: https://github.com/nodejs/node/pull/41600
     description: The subject option now defaults to `'default'`.
-  - version: REPLACEME
+  - version: v17.5.0
     pr-url: https://github.com/nodejs/node/pull/41599
     description: The `wildcards`, `partialWildcards`, `multiLabelWildcards`, and
                  `singleLabelSubdomains` options have been removed since they
                  had no effect.
-  - version: REPLACEME
+  - version: v17.5.0
     pr-url: https://github.com/nodejs/node/pull/41569
     description: The subject option can now be set to `'default'`.
 -->
@@ -2513,7 +2529,7 @@ changes:
   - version: REPLACEME
     pr-url: https://github.com/nodejs/node/pull/41600
     description: The subject option now defaults to `'default'`.
-  - version: REPLACEME
+  - version: v17.5.0
     pr-url: https://github.com/nodejs/node/pull/41569
     description: The subject option can now be set to `'default'`.
 -->
@@ -2554,7 +2570,7 @@ considered, even if the certificate contains no subject alternative names.
 <!-- YAML
 added: v15.6.0
 changes:
-  - version: REPLACEME
+  - version: v17.5.0
     pr-url: https://github.com/nodejs/node/pull/41571
     description: The `options` argument has been removed since it had no effect.
 -->
@@ -2615,7 +2631,9 @@ The SHA-256 fingerprint of this certificate.
 ### `x509.fingerprint512`
 
 <!-- YAML
-added: v17.2.0
+added:
+  - v17.2.0
+  - v16.14.0
 -->
 
 * Type: {string}
@@ -2869,6 +2887,12 @@ This property is deprecated. Please use `crypto.setFips()` and
 
 <!-- YAML
 added: v15.8.0
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
 -->
 
 * `candidate` {ArrayBuffer|SharedArrayBuffer|TypedArray|Buffer|DataView|bigint}
@@ -3547,6 +3571,12 @@ Both keys must have the same `asymmetricKeyType`, which must be one of `'dh'`
 
 <!-- YAML
 added: v15.0.0
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
 -->
 
 * `type`: {string} The intended use of the generated secret key. Currently
@@ -3592,6 +3622,11 @@ generateKey('hmac', { length: 64 }, (err, key) => {
 <!-- YAML
 added: v10.12.0
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
   - version: v16.10.0
     pr-url: https://github.com/nodejs/node/pull/39927
     description: Add ability to define `RSASSA-PSS-params` sequence parameters
@@ -3852,6 +3887,12 @@ console.log(key.export().toString('hex'));  // e89..........41e
 
 <!-- YAML
 added: v15.8.0
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
 -->
 
 * `size` {number} The size (in bits) of the prime to generate.
@@ -4112,12 +4153,20 @@ added: v17.4.0
 * `typedArray` {Buffer|TypedArray|DataView|ArrayBuffer}
 * Returns: {Buffer|TypedArray|DataView|ArrayBuffer} Returns `typedArray`.
 
-A convenient alias for [`crypto.webcrypto.getRandomValues()`][].
+A convenient alias for [`crypto.webcrypto.getRandomValues()`][]. This
+implementation is not compliant with the Web Crypto spec, to write
+web-compatible code use [`crypto.webcrypto.getRandomValues()`][] instead.
 
 ### `crypto.hkdf(digest, ikm, salt, info, keylen, callback)`
 
 <!-- YAML
 added: v15.0.0
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
 -->
 
 * `digest` {string} The digest algorithm to use.
@@ -4221,6 +4270,11 @@ console.log(Buffer.from(derivedKey).toString('hex'));  // '24156e2...5391653'
 <!-- YAML
 added: v0.5.5
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
   - version: v15.0.0
     pr-url: https://github.com/nodejs/node/pull/35093
     description: The password and salt arguments can also be ArrayBuffer
@@ -4602,6 +4656,11 @@ be passed instead of a public key.
 <!-- YAML
 added: v0.5.8
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
   - version: v9.0.0
     pr-url: https://github.com/nodejs/node/pull/16454
     description: Passing `null` as the `callback` argument now throws
@@ -4782,6 +4841,11 @@ added:
   - v7.10.0
   - v6.13.0
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
   - version: v9.0.0
     pr-url: https://github.com/nodejs/node/pull/15231
     description: The `buffer` argument may be any `TypedArray` or `DataView`.
@@ -4918,6 +4982,12 @@ request.
 added:
   - v14.10.0
   - v12.19.0
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
 -->
 
 * `min` {integer} Start of random range (inclusive). **Default:** `0`.
@@ -5021,6 +5091,11 @@ cryptographic pseudorandom number generator.
 <!-- YAML
 added: v10.5.0
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
   - version: v15.0.0
     pr-url: https://github.com/nodejs/node/pull/35093
     description: The password and salt arguments can also be ArrayBuffer
@@ -5244,6 +5319,11 @@ Throws an error if FIPS mode is not available.
 <!-- YAML
 added: v12.0.0
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
   - version: v15.12.0
     pr-url: https://github.com/nodejs/node/pull/37500
     description: Optional callback argument added.
@@ -5340,6 +5420,11 @@ not introduce timing vulnerabilities.
 <!-- YAML
 added: v12.0.0
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: Passing an invalid callback to the `callback` argument
+                 now throws `ERR_INVALID_ARG_TYPE` instead of
+                 `ERR_INVALID_CALLBACK`.
   - version: v15.12.0
     pr-url: https://github.com/nodejs/node/pull/37500
     description: Optional callback argument added.
@@ -5463,21 +5548,6 @@ API (e.g. `update()`, `final()`, or `digest()`). Also, many methods accepted
 and returned `'latin1'` encoded strings by default rather than `Buffer`s. This
 default was changed after Node.js v0.8 to use [`Buffer`][] objects by default
 instead.
-
-### Recent ECDH changes
-
-Usage of `ECDH` with non-dynamically generated key pairs has been simplified.
-Now, [`ecdh.setPrivateKey()`][] can be called with a preselected private key
-and the associated public point (key) will be computed and stored in the object.
-This allows code to only store and provide the private part of the EC key pair.
-[`ecdh.setPrivateKey()`][] now also validates that the private key is valid for
-the selected curve.
-
-The [`ecdh.setPublicKey()`][] method is now deprecated as its inclusion in the
-API is not useful. Either a previously stored private key should be set, which
-automatically generates the associated public key, or [`ecdh.generateKeys()`][]
-should be called. The main drawback of using [`ecdh.setPublicKey()`][] is that
-it can be used to put the ECDH key pair into an inconsistent state.
 
 ### Support for weak or compromised algorithms
 
@@ -5776,8 +5846,8 @@ See the [list of SSL OP Flags][] for details.
   </tr>
   <tr>
     <td><code>SSL_OP_PRIORITIZE_CHACHA</code></td>
-    <td>Instructs OpenSSL server to prioritize ChaCha20Poly1305
-    when client does.
+    <td>Instructs OpenSSL server to prioritize ChaCha20-Poly1305
+    when the client does.
     This option has no effect if
     <code>SSL_OP_CIPHER_SERVER_PREFERENCE</code>
     is not enabled.</td>
@@ -6028,7 +6098,6 @@ See the [list of SSL OP Flags][] for details.
 [`diffieHellman.setPublicKey()`]: #diffiehellmansetpublickeypublickey-encoding
 [`ecdh.generateKeys()`]: #ecdhgeneratekeysencoding-format
 [`ecdh.setPrivateKey()`]: #ecdhsetprivatekeyprivatekey-encoding
-[`ecdh.setPublicKey()`]: #ecdhsetpublickeypublickey-encoding
 [`hash.digest()`]: #hashdigestencoding
 [`hash.update()`]: #hashupdatedata-inputencoding
 [`hmac.digest()`]: #hmacdigestencoding

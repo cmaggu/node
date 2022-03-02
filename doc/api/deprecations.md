@@ -1815,6 +1815,10 @@ Type: End-of-Life
 `runInAsyncIdScope` doesn't emit the `'before'` or `'after'` event and can thus
 cause a lot of issues. See <https://github.com/nodejs/node/issues/14328>.
 
+<!-- md-lint skip-deprecation DEP0087 -->
+
+<!-- md-lint skip-deprecation DEP0088 -->
+
 ### DEP0089: `require('assert')`
 
 <!-- YAML
@@ -2255,9 +2259,9 @@ Type: End-of-Life
 The `crypto._toBuf()` function was not designed to be used by modules outside
 of Node.js core and was removed.
 
-### DEP0115: `crypto.prng()`, `crypto.pseudoRandomBytes()`, `crypto.rng()`
-
 <!--lint disable nodejs-yaml-comments -->
+
+### DEP0115: `crypto.prng()`, `crypto.pseudoRandomBytes()`, `crypto.rng()`
 
 <!-- YAML
 changes:
@@ -2269,9 +2273,9 @@ changes:
                  with `--pending-deprecation` support.
 -->
 
-<!--lint enable nodejs-yaml-comments -->
-
 Type: Documentation-only (supports [`--pending-deprecation`][])
+
+<!--lint enable nodejs-yaml-comments -->
 
 In recent versions of Node.js, there is no difference between
 [`crypto.randomBytes()`][] and `crypto.pseudoRandomBytes()`. The latter is
@@ -2891,10 +2895,9 @@ changes:
 
 Type: Runtime
 
-The `process.config` property is intended to provide access to configuration
-settings set when the Node.js binary was compiled. However, the property has
-been mutable by user code making it impossible to rely on. The ability to
-change the value has been deprecated and will be disabled in the future.
+The `process.config` property provides access to Node.js compile-time settings.
+However, the property is mutable and therefore subject to tampering. The ability
+to change the value will be removed in a future version of Node.js.
 
 ### DEP0151: Main index lookup and extension searching
 
@@ -3016,7 +3019,9 @@ it was an aborted or graceful destroy.
 
 <!-- YAML
 changes:
-  - version: v17.2.0
+  - version:
+      - v17.2.0
+      - v16.14.0
     pr-url: https://github.com/nodejs/node/pull/40860
     description: Documentation-only deprecation.
 -->
@@ -3044,7 +3049,7 @@ const w = new Writable({
 
 <!-- YAML
 changes:
-  - version: REPLACEME
+  - version: v17.5.0
     pr-url: https://github.com/nodejs/node/pull/41596
     description: Documentation-only deprecation.
 -->
@@ -3055,6 +3060,55 @@ This method was deprecated because it is not compatible with
 `Uint8Array.prototype.slice()`, which is a superclass of `Buffer`.
 
 Use [`buffer.subarray`][] which does the same thing instead.
+
+### DEP0159: `ERR_INVALID_CALLBACK`
+
+<!-- YAML
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41678
+    description: End-of-Life.
+-->
+
+Type: End-of-Life
+
+This error code was removed due to adding more confusion to
+the errors used for value type validation.
+
+### DEP0160: `process.on('multipleResolves', handler)`
+
+<!-- YAML
+changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/41896
+    description: Runtime deprecation.
+  - version: v17.6.0
+    pr-url: https://github.com/nodejs/node/pull/41872
+    description: Documentation-only deprecation.
+-->
+
+Type: Runtime.
+
+This event was deprecated because it did not work with V8 promise combinators
+which diminished its usefulness.
+
+### DEP0161: `process._getActiveRequests()` and `process._getActiveHandles()`
+
+<!-- YAML
+changes:
+  - version: v17.6.0
+    pr-url: https://github.com/nodejs/node/pull/41587
+    description: Documentation-only deprecation.
+-->
+
+Type: Documentation-only
+
+The `process._getActiveHandles()` and `process._getActiveRequests()`
+functions are not intended for public use and can be removed in future
+releases.
+
+Use [`process.getActiveResourcesInfo()`][] to get a list of types of active
+resources and not the actual references.
 
 [Legacy URL API]: url.md#legacy-url-api
 [NIST SP 800-38D]: https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf
@@ -3127,6 +3181,7 @@ Use [`buffer.subarray`][] which does the same thing instead.
 [`os.networkInterfaces()`]: os.md#osnetworkinterfaces
 [`os.tmpdir()`]: os.md#ostmpdir
 [`process.env`]: process.md#processenv
+[`process.getActiveResourcesInfo()`]: process.md#processgetactiveresourcesinfo
 [`process.mainModule`]: process.md#processmainmodule
 [`punycode`]: punycode.md
 [`readable.readableEnded`]: stream.md#readablereadableended

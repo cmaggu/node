@@ -55,7 +55,7 @@ class Publish extends BaseCommand {
     const json = this.npm.config.get('json')
     const defaultTag = this.npm.config.get('tag')
     const ignoreScripts = this.npm.config.get('ignore-scripts')
-    const silent = log.level === 'silent'
+    const { silent } = this.npm
 
     if (semver.validRange(defaultTag)) {
       throw new Error('Tag name must not be a valid SemVer range: ' + defaultTag.trim())
@@ -83,7 +83,8 @@ class Publish extends BaseCommand {
       })
     }
 
-    const tarballData = await pack(spec, opts)
+    // we pass dryRun: true to libnpmpack so it doesn't write the file to disk
+    const tarballData = await pack(spec, { ...opts, dryRun: true })
     const pkgContents = await getContents(manifest, tarballData)
 
     // The purpose of re-reading the manifest is in case it changed,
@@ -151,7 +152,7 @@ class Publish extends BaseCommand {
 
     const results = {}
     const json = this.npm.config.get('json')
-    const silent = log.level === 'silent'
+    const { silent } = this.npm
     const noop = a => a
     const color = this.npm.color ? chalk : { green: noop, bold: noop }
     await this.setWorkspaces(filters)

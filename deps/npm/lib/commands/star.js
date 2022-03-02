@@ -29,7 +29,7 @@ class Star extends BaseCommand {
     const pkgs = args.map(npa)
     for (const pkg of pkgs) {
       const [username, fullData] = await Promise.all([
-        getIdentity(this.npm, this.npm.flatOptions),
+        getIdentity(this.npm, { ...this.npm.flatOptions }),
         fetch.json(pkg.escapedName, {
           ...this.npm.flatOptions,
           spec: pkg,
